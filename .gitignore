@@ -1,0 +1,17 @@
+﻿/storage/*.sqlite
+/storage/*.sqlite-journal
+/storage/*.sqlite-wal
+/storage/jwt.secret
+/storage/backups/*
+!/storage/backups/.gitkeep
+storage/tmp*
+storage/.schema_ready
+.env
+.env.local
+.env.*.local
+.env.bak*
+neon.ts
+.neon
+.neon/
+neon.ts.bak
+node_modules/
