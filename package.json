@@ -3,8 +3,8 @@
   "private": true,
   "description": "FarmWise Farm Management System",
   "scripts": {
-    "start": "C:\\xampp\\php\\php.exe -S 127.0.0.1:8081 router.php",
-    "dev": "C:\\xampp\\php\\php.exe -S 127.0.0.1:8081 router.php"
+    "start": "php -S 127.0.0.1:8081 router.php",
+    "dev": "php -S 127.0.0.1:8081 router.php"
   },
   "dependencies": {
     "@google/genai": "^2.31.0",
