@@ -1,0 +1,524 @@
+{
+  "base": "http://127.0.0.1:8081",
+  "fail": 0,
+  "results": [
+    {
+      "role": "guest",
+      "module": "app",
+      "action": "ready (not Neon 503)",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "guest",
+      "module": "landing",
+      "action": "open",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "guest",
+      "module": "auth",
+      "action": "bad login rejected",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "admin",
+      "module": "auth",
+      "action": "login",
+      "pass": true,
+      "detail": "admin@ifms.local"
+    },
+    {
+      "role": "admin",
+      "module": "dashboard",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "admin",
+      "module": "tasks",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "admin",
+      "module": "farms",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "admin",
+      "module": "users",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "admin",
+      "module": "notifications",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "admin",
+      "module": "auth",
+      "action": "logout",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "owner",
+      "module": "auth",
+      "action": "login",
+      "pass": true,
+      "detail": "owner@ifms.local"
+    },
+    {
+      "role": "owner",
+      "module": "dashboard",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "owner",
+      "module": "farms",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "owner",
+      "module": "fields",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "owner",
+      "module": "tasks",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "owner",
+      "module": "inventory_items",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "owner",
+      "module": "sales_orders",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "owner",
+      "module": "transactions",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "owner",
+      "module": "notifications",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "owner",
+      "module": "auth",
+      "action": "logout",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "manager",
+      "module": "auth",
+      "action": "login",
+      "pass": true,
+      "detail": "manager@ifms.local"
+    },
+    {
+      "role": "manager",
+      "module": "dashboard",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "manager",
+      "module": "tasks",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "manager",
+      "module": "plantings",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "manager",
+      "module": "stock_movements",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "manager",
+      "module": "harvests",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "manager",
+      "module": "dispatches",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "manager",
+      "module": "payments/create",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/payments/create"
+    },
+    {
+      "role": "manager",
+      "module": "notifications",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "manager",
+      "module": "auth",
+      "action": "logout",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "agronomist",
+      "module": "auth",
+      "action": "login",
+      "pass": true,
+      "detail": "agro@ifms.local"
+    },
+    {
+      "role": "agronomist",
+      "module": "dashboard",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "agronomist",
+      "module": "pest_scouting",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "agronomist",
+      "module": "plantings",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "agronomist",
+      "module": "crop_growth",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "agronomist",
+      "module": "tasks",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "agronomist",
+      "module": "sales_orders/create",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/sales_orders/create"
+    },
+    {
+      "role": "agronomist",
+      "module": "payments",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/payments"
+    },
+    {
+      "role": "agronomist",
+      "module": "notifications",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "agronomist",
+      "module": "auth",
+      "action": "logout",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "worker",
+      "module": "auth",
+      "action": "login",
+      "pass": true,
+      "detail": "worker@ifms.local"
+    },
+    {
+      "role": "worker",
+      "module": "dashboard",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "worker",
+      "module": "tasks",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "worker",
+      "module": "attendance",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "worker",
+      "module": "transactions",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/transactions"
+    },
+    {
+      "role": "worker",
+      "module": "stock_movements/create",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/stock_movements/create"
+    },
+    {
+      "role": "worker",
+      "module": "sales_orders/create",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/sales_orders/create"
+    },
+    {
+      "role": "worker",
+      "module": "notifications",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "worker",
+      "module": "auth",
+      "action": "logout",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "accountant",
+      "module": "auth",
+      "action": "login",
+      "pass": true,
+      "detail": "accounts@ifms.local"
+    },
+    {
+      "role": "accountant",
+      "module": "dashboard",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "accountant",
+      "module": "invoices",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "accountant",
+      "module": "payments",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "accountant",
+      "module": "transactions",
+      "action": "list",
+      "pass": true,
+      "detail": "http=200"
+    },
+    {
+      "role": "accountant",
+      "module": "reports",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "accountant",
+      "module": "plantings/create",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/plantings/create"
+    },
+    {
+      "role": "accountant",
+      "module": "tasks/create",
+      "action": "denied as expected",
+      "pass": true,
+      "detail": "status=403 url=http://127.0.0.1:8081/module/tasks/create"
+    },
+    {
+      "role": "accountant",
+      "module": "notifications",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "accountant",
+      "module": "auth",
+      "action": "logout",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "manager",
+      "module": "fields",
+      "action": "create via UI",
+      "pass": true,
+      "detail": "http://127.0.0.1:8081/module/fields "
+    },
+    {
+      "role": "manager",
+      "module": "inventory_items",
+      "action": "create via UI",
+      "pass": true,
+      "detail": "http://127.0.0.1:8081/module/inventory_items"
+    },
+    {
+      "role": "manager",
+      "module": "stock_movements",
+      "action": "stock in via UI",
+      "pass": true,
+      "detail": "http://127.0.0.1:8081/module/stock_movements"
+    },
+    {
+      "role": "manager",
+      "module": "stock_movements",
+      "action": "insufficient stock rejected in UI",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "agronomist",
+      "module": "pest_scouting",
+      "action": "create via UI",
+      "pass": true,
+      "detail": "http://127.0.0.1:8081/module/pest_scouting"
+    },
+    {
+      "role": "agronomist",
+      "module": "tasks",
+      "action": "create via UI",
+      "pass": true,
+      "detail": "http://127.0.0.1:8081/module/tasks"
+    },
+    {
+      "role": "accountant",
+      "module": "reports",
+      "action": "financial cash-basis labels",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "accountant",
+      "module": "reports",
+      "action": "receivables report",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "accountant",
+      "module": "plantings",
+      "action": "create blocked",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "worker",
+      "module": "tasks",
+      "action": "list",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "worker",
+      "module": "transactions",
+      "action": "blocked",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "owner",
+      "module": "weather",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "owner",
+      "module": "fields",
+      "action": "persist after refresh",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "admin",
+      "module": "users",
+      "action": "admin list",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "role": "admin",
+      "module": "integrations",
+      "action": "view",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}
