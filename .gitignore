@@ -6,6 +6,11 @@
 !/storage/backups/.gitkeep
 storage/tmp*
 storage/.schema_ready
+storage/assistant.log
+storage/logs/*.log
+storage/certs/cacert-with-local.pem
+storage/certs/sophos-ssl-ca.pem
+storage/.schema_mig_ops4
 .env
 .env.local
 .env.*.local

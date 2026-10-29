@@ -10,5 +10,8 @@
     "@google/genai": "^2.31.0",
     "@neon/config": "^1.9.4",
     "@neon/env": "^1.6.5"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.1"
   }
 }

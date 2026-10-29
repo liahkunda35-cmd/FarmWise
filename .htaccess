@@ -1,4 +1,25 @@
+# Refuse private files even when Apache uses the project folder as the document root.
+# PHP still reads storage, config, and uploads on disk. These rules only block HTTP downloads.
+
+<IfModule mod_authz_core.c>
+    <FilesMatch "(?i)^(\.env|\.env\..*|\.gitignore|\.htaccess|composer\.(json|lock)|package(-lock)?\.json)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+
 RewriteEngine On
+
+RewriteRule ^assets/(.*)$ frontend/assets/$1 [END]
+RewriteRule ^frontend/config/api\.js$ - [END]
+
+RewriteRule (?i)(^|/)\.env - [F,L]
+RewriteRule (?i)(^|/)\.(git|svn|hg)(/|$) - [F,L]
+RewriteRule (?i)^(storage|app|config|views|scripts|docs|node_modules|vendor|backend)(/|$) - [F,L]
+RewriteRule (?i)^frontend/(pages|components)(/|$) - [F,L]
+RewriteRule (?i)^frontend/bridge\.php$ - [F,L]
+RewriteRule (?i)jwt\.secret$ - [F,L]
+RewriteRule (?i)\.(sqlite|sqlite3|sqlite-journal|pem|sql|bak)$ - [F,L]
+
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ index.php [QSA,L]
