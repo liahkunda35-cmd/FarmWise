@@ -66,9 +66,10 @@ return [
         'dispatches' => $ops,
         'yield_forecasts' => $ops,
         'market_insights' => $read,
+        'agri_history' => $read,
         'reports' => $read,
         'notifications' => $write,
-        'calendar' => $read,
+        'calendar' => $ops,
         'users' => $write,
     ],
 
@@ -125,9 +126,10 @@ return [
         'dispatches' => $ops,
         'yield_forecasts' => $write,
         'market_insights' => $read,
+        'agri_history' => $read,
         'reports' => $read,
         'notifications' => $write,
-        'calendar' => $read,
+        'calendar' => $ops,
     ],
 
     'agronomist' => [
@@ -155,16 +157,18 @@ return [
         'tasks' => $write,
         'yield_forecasts' => $ops,
         'market_insights' => $read,
+        'agri_history' => $read,
         'reports' => $read,
         'notifications' => $read,
         'market_prices' => $read,
-        'calendar' => $read,
+        'calendar' => $ops,
     ],
 
     // Worker — assigned tasks + own field reporting. No finance, storage lots, or farm admin.
     // Plantings/fields/animals/schedules/inventory remain view-only so forms can resolve relations.
     'worker' => [
         'dashboard' => $read,
+        'farms' => $read,
         'tasks' => ['view', 'edit'],
         'attendance' => ['view', 'create'],
         'plantings' => $read,
@@ -184,7 +188,7 @@ return [
         'harvests' => ['view', 'create'],
         'notifications' => $read,
         'weather' => $read,
-        'calendar' => $read,
+        'calendar' => $ops,
     ],
 
     'accountant' => [
@@ -214,7 +218,8 @@ return [
         'reports' => $read,
         'notifications' => $read,
         'market_insights' => $read,
+        'agri_history' => $read,
         'yield_forecasts' => $read,
-        'calendar' => $read,
+        'calendar' => $ops,
     ],
 ];

@@ -10,9 +10,9 @@ return [
     ]],
     ['label' => 'Land', 'items' => [
         ['key' => 'farms', 'label' => 'Farms', 'href' => 'module/farms', 'icon' => 'land-plot'],
-        ['key' => 'fields', 'label' => 'Fields & Plots', 'href' => 'module/fields', 'icon' => 'map'],
+        ['key' => 'fields', 'label' => 'Fields & Plots', 'href' => 'fields-planner', 'icon' => 'map', 'nav_id' => 'fields_plots'],
         ['key' => 'soil_records', 'label' => 'Soil Records', 'href' => 'module/soil_records', 'icon' => 'layers'],
-        ['key' => 'crop_rotations', 'label' => 'Crop Rotation', 'href' => 'module/crop_rotations', 'icon' => 'refresh-cw'],
+        ['key' => 'crop_rotations', 'label' => 'Crop Rotation', 'href' => 'crop-rotation', 'icon' => 'refresh-cw', 'nav_id' => 'crop_rotation'],
         ['key' => 'land_use_plans', 'label' => 'Land-use Plans', 'href' => 'module/land_use_plans', 'icon' => 'pencil-ruler'],
     ]],
     ['label' => 'Crops', 'items' => [
@@ -77,6 +77,7 @@ return [
     ['label' => 'Intelligence', 'items' => [
         ['key' => 'yield_forecasts', 'label' => 'Yield Forecasts', 'href' => 'forecasts', 'icon' => 'brain'],
         ['key' => 'market_insights', 'label' => 'Market Insights', 'href' => 'market-insights', 'icon' => 'trending-up'],
+        ['key' => 'agri_history', 'label' => 'Agri History', 'href' => 'agri-history', 'icon' => 'landmark'],
         ['key' => 'reports', 'label' => 'Reports', 'href' => 'reports', 'icon' => 'bar-chart-3'],
     ]],
     ['label' => 'Admin Console', 'items' => [

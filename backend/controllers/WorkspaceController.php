@@ -96,25 +96,7 @@ class WorkspaceController
     {
         Auth::requireAuth();
         Csrf::verify();
-        $code = strtoupper(trim((string) input('join_code')));
-        $user = Auth::user();
-        if (!in_array($user['role'], ['manager', 'worker', 'agronomist', 'accountant'], true)) {
-            flash('error', 'Farm owners create a workspace instead of joining with a code.');
-            redirect('dashboard');
-        }
-        if ($code === '') {
-            flash('error', 'Enter the farm join code provided by the owner or administrator.');
-            redirect('dashboard');
-        }
-        $farm = db()->first("SELECT * FROM farms WHERE join_code = ? AND status = 'active'", [$code]);
-        if (!$farm) {
-            flash('error', 'That join code is invalid or the farm is not active.');
-            redirect('dashboard');
-        }
-        db()->update('users', ['farm_id' => $farm['id']], $user['id']);
-        Auth::setActiveFarm((int) $farm['id']);
-        Audit::log('update', 'users', (int) $user['id'], 'Joined farm via join code');
-        flash('success', 'You now have access to ' . $farm['name'] . '.');
+        flash('error', 'Farm assignment is handled by an administrator.');
         redirect('dashboard');
     }
 
@@ -231,10 +213,6 @@ class WorkspaceController
         }
         $focus = new DateTimeImmutable($dateStr, new DateTimeZone(app_timezone()));
         if ($view === 'month') {
-            $start = $focus->modify('first day of this month')->modify('monday this week');
-            if ($focus->modify('first day of this month')->format('N') === '1') {
-                $start = $focus->modify('first day of this month');
-            }
             $monthStart = $focus->modify('first day of this month');
             $start = $monthStart->modify('monday this week');
             $end = $monthStart->modify('last day of this month')->modify('sunday this week');
@@ -250,9 +228,116 @@ class WorkspaceController
         foreach ($events as $event) {
             $byDate[$event['date']][] = $event;
         }
+        $editEvent = null;
+        $eventId = (int) input('event', 0);
+        if ($eventId > 0) {
+            $editEvent = CalendarService::find($eventId);
+        }
+        $farms = [];
+        if (Auth::isAdmin() && !Auth::farmId()) {
+            $farms = db()->select('SELECT id, name FROM farms ORDER BY name ASC');
+        } elseif (Auth::farmId()) {
+            $one = db()->find('farms', Auth::farmId());
+            $farms = $one ? [['id' => $one['id'], 'name' => $one['name']]] : [];
+        }
+        $categories = CalendarService::categories();
+        $showForm = input('new') === '1' || $editEvent;
         view('layouts/app', [
-            'title' => 'Operations calendar',
-            'content' => render('calendar', compact('view', 'focus', 'start', 'end', 'byDate')),
+            'title' => 'Calendar',
+            'content' => render('calendar', compact('view', 'focus', 'start', 'end', 'byDate', 'editEvent', 'farms', 'categories', 'showForm')),
         ]);
+    }
+
+    public static function saveCalendarEvent(): void
+    {
+        Auth::authorize('calendar', 'create');
+        Csrf::verify();
+        $id = (int) input('id', 0);
+        if ($id > 0) {
+            Auth::authorize('calendar', 'edit');
+            $existing = CalendarService::find($id);
+            if (!$existing) {
+                flash('error', 'Event not found.');
+                redirect('calendar');
+            }
+        }
+        $title = trim((string) input('title', ''));
+        $description = trim((string) input('description', ''));
+        $eventDate = (string) input('event_date', '');
+        $startTime = trim((string) input('start_time', ''));
+        $endTime = trim((string) input('end_time', ''));
+        $category = trim((string) input('category', 'general'));
+        $farmId = (int) input('farm_id', Auth::farmId() ?: 0);
+        $reminder = input('reminder') ? 1 : 0;
+        $cats = CalendarService::categories();
+        if ($title === '' || mb_strlen($title) > 160) {
+            flash('error', 'Enter an event title.');
+            redirect('calendar?new=1');
+        }
+        if (!is_valid_date($eventDate)) {
+            flash('error', 'Choose a valid event date.');
+            redirect('calendar?new=1');
+        }
+        if ($category === '' || !isset($cats[$category])) {
+            $category = 'general';
+        }
+        if ($farmId > 0 && !Auth::isAdmin() && !Auth::canAccessFarm($farmId)) {
+            flash('error', 'You cannot assign events to that farm.');
+            redirect('calendar');
+        }
+        if (!$farmId && Auth::farmId()) {
+            $farmId = (int) Auth::farmId();
+        }
+        $savedId = CalendarService::save([
+            'title' => $title,
+            'description' => $description !== '' ? $description : null,
+            'event_date' => $eventDate,
+            'start_time' => $startTime,
+            'end_time' => $endTime,
+            'category' => $category,
+            'farm_id' => $farmId ?: null,
+            'reminder' => $reminder,
+        ], $id > 0 ? $id : null);
+        Audit::log($id > 0 ? 'update' : 'create', 'calendar', $savedId, $title);
+
+        try {
+            NotificationService::notifyCalendarEvent([
+                'id' => $savedId,
+                'title' => $title,
+                'event_date' => $eventDate,
+                'start_time' => $startTime,
+                'farm_id' => $farmId ?: null,
+                'user_id' => (int) Auth::id(),
+            ], $id > 0);
+            if ($reminder) {
+                try {
+                    db()->update('calendar_events', ['reminder_sent_at' => date('Y-m-d H:i:s')], $savedId);
+                } catch (Throwable $e) {
+                }
+            }
+        } catch (Throwable $e) {
+            // Event is saved; alert failure must not block the calendar flow.
+            error_log('calendar alert failed: ' . $e->getMessage());
+        }
+        session_memo_flush();
+
+        flash('success', $id > 0 ? 'Event updated.' : 'Event saved.');
+        redirect('calendar?view=month&date=' . urlencode($eventDate));
+    }
+
+    public static function deleteCalendarEvent(): void
+    {
+        Auth::authorize('calendar', 'delete');
+        Csrf::verify();
+        $id = (int) input('id', 0);
+        $row = CalendarService::find($id);
+        if (!$row) {
+            flash('error', 'Event not found.');
+            redirect('calendar');
+        }
+        CalendarService::delete($id);
+        Audit::log('delete', 'calendar', $id, $row['title'] ?? '');
+        flash('success', 'Event deleted.');
+        redirect('calendar');
     }
 }

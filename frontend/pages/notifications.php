@@ -1,81 +1,77 @@
 <?php
 $categories = [
-    'all' => 'All types',
-    'planting' => 'Planting',
-    'fertilizer' => 'Fertilizer',
-    'spraying' => 'Spraying',
-    'irrigation' => 'Irrigation',
-    'vaccination' => 'Vaccination',
-    'disease' => 'Disease',
-    'pest' => 'Pest',
-    'stock' => 'Low stock',
-    'chemical' => 'Expiring chemicals',
-    'maintenance' => 'Maintenance',
-    'harvest' => 'Harvest',
+    'all' => 'All',
     'weather' => 'Weather',
-    'market' => 'Market',
+    'calendar' => 'Calendar',
+    'planting' => 'Planting',
+    'harvest' => 'Harvest',
+    'inventory' => 'Stock',
+    'tasks' => 'Tasks',
 ];
 $activeCat = input('category') ?: 'all';
-$grouped = [];
-foreach ($rows as $row) {
-    $cat = strtolower((string)($row['category'] ?? 'other'));
-    $grouped[$cat][] = $row;
-}
+$filter = $filter ?? 'all';
+$count = is_array($rows ?? null) ? count($rows) : 0;
 ?>
-<section class="panel">
-    <header class="panel-tools">
-        <h3>Notifications &amp; alerts</h3>
-        <div class="tool-row">
-            <form class="search-form" method="get">
-                <label class="sr-only" for="alert-q">Search alerts</label>
-                <input id="alert-q" name="q" value="<?= e(input('q')) ?>" placeholder="Search alerts">
-                <select name="filter" aria-label="Read filter">
-                    <option value="all" <?= ($filter ?? 'all')==='all'?'selected':'' ?>>All</option>
-                    <option value="unread" <?= ($filter ?? '')==='unread'?'selected':'' ?>>Unread</option>
-                    <option value="read" <?= ($filter ?? '')==='read'?'selected':'' ?>>Read</option>
-                </select>
-                <input type="hidden" name="category" value="<?= e($activeCat) ?>">
-                <button class="btn btn-ghost btn-sm">Filter</button>
-            </form>
+<section class="panel list-panel-clean">
+    <header class="list-hero">
+        <div class="list-hero-copy">
+            <h3>Alerts</h3>
+            <p class="list-count"><?= (int) $count ?> alert<?= $count === 1 ? '' : 's' ?></p>
+        </div>
+        <div class="list-hero-actions">
             <form method="post" action="<?= e(url('notifications/read-all')) ?>">
                 <?= fe_csrf_field() ?>
                 <button class="btn btn-ghost btn-sm" type="submit">Mark all as read</button>
             </form>
         </div>
     </header>
-    <div class="filter-chips" role="tablist" aria-label="Alert type">
+
+    <div class="simple-tabs" role="tablist" aria-label="Alert filters">
+        <a class="simple-tab<?= $filter === 'all' ? ' is-active' : '' ?>" href="?filter=all<?= $activeCat !== 'all' ? '&category=' . e($activeCat) : '' ?>">All</a>
+        <a class="simple-tab<?= $filter === 'unread' ? ' is-active' : '' ?>" href="?filter=unread<?= $activeCat !== 'all' ? '&category=' . e($activeCat) : '' ?>">Unread</a>
+        <a class="simple-tab<?= $filter === 'read' ? ' is-active' : '' ?>" href="?filter=read<?= $activeCat !== 'all' ? '&category=' . e($activeCat) : '' ?>">Read</a>
+    </div>
+
+    <div class="simple-tabs wrap" role="tablist" aria-label="Alert type">
         <?php foreach ($categories as $key => $label): ?>
-            <a class="filter-chip<?= $activeCat === $key ? ' is-active' : '' ?>" href="?<?= e(http_build_query(array_filter(['filter' => $filter ?? 'all', 'q' => input('q'), 'category' => $key === 'all' ? null : $key]))) ?>"><?= e($label) ?></a>
+            <a class="simple-tab<?= $activeCat === $key ? ' is-active' : '' ?>" href="?<?= e(http_build_query(array_filter(['filter' => $filter, 'category' => $key === 'all' ? null : $key]))) ?>"><?= e($label) ?></a>
         <?php endforeach; ?>
     </div>
+
     <ul class="feed lg">
-        <?php
-        $shown = 0;
-        foreach ($rows as $row):
-            $cat = strtolower((string)($row['category'] ?? ''));
-            if ($activeCat !== 'all' && $cat !== $activeCat && !str_contains($cat, $activeCat)) {
-                continue;
-            }
-            $shown++;
-        ?>
-            <li class="<?= empty($row['is_read']) ? 'is-unread' : '' ?>">
-                <div>
-                    <strong><?= e($row['title']) ?></strong>
-                    <span><?= e($row['message']) ?></span>
-                    <small><?= e($row['category']) ?> · <?= dater($row['created_at'], 'd M Y H:i') ?> · <?= empty($row['is_read']) ? 'Unread' : 'Read' ?></small>
-                </div>
-                <div>
-                    <?= status_badge($row['severity']) ?>
-                    <?php if (!$row['is_read']): ?>
-                        <form method="post" action="<?= e(url('notifications/read/'.$row['id'])) ?>">
-                            <?= fe_csrf_field() ?>
-                            <button class="btn btn-ghost btn-sm" type="submit">Mark read</button>
-                        </form>
-                    <?php endif; ?>
-                    <?php if ($row['link']): ?><a class="btn btn-ghost btn-sm" href="<?= e(url($row['link'])) ?>">Open</a><?php endif; ?>
-                </div>
-            </li>
-        <?php endforeach; ?>
-        <?php if (!$shown): ?><li class="muted">No alerts match this filter.</li><?php endif; ?>
+    <?php
+    $shown = 0;
+    foreach ($rows as $row):
+        $cat = strtolower((string) ($row['category'] ?? ''));
+        if ($activeCat !== 'all' && $cat !== $activeCat && !str_contains($cat, $activeCat)) {
+            continue;
+        }
+        $shown++;
+    ?>
+        <li class="<?= empty($row['is_read']) ? 'is-unread' : '' ?>">
+            <div>
+                <strong><?= e($row['title']) ?></strong>
+                <span><?= e($row['message']) ?></span>
+                <small><?= e($row['category']) ?> · <?= dater($row['created_at'], 'd M Y H:i') ?></small>
+            </div>
+            <div class="feed-actions">
+                <?= status_badge($row['severity']) ?>
+                <?php if (!$row['is_read']): ?>
+                    <form method="post" action="<?= e(url('notifications/read/'.$row['id'])) ?>">
+                        <?= fe_csrf_field() ?>
+                        <button class="btn btn-ghost btn-sm" type="submit">Mark read</button>
+                    </form>
+                <?php endif; ?>
+                <form method="post" action="<?= e(url('notifications/dismiss/'.$row['id'])) ?>">
+                    <?= fe_csrf_field() ?>
+                    <button class="btn btn-ghost btn-sm" type="submit">Dismiss</button>
+                </form>
+                <?php if ($row['link']): ?><a class="btn btn-ghost btn-sm" href="<?= e(url($row['link'])) ?>">Open</a><?php endif; ?>
+            </div>
+        </li>
+    <?php endforeach; ?>
+    <?php if (!$shown): ?>
+        <li class="muted empty-alerts">No alerts at the moment.</li>
+    <?php endif; ?>
     </ul>
 </section>

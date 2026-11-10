@@ -19,7 +19,7 @@ class WorkerRecords
             return null;
         }
         if ($module === 'attendance') {
-            return self::attendanceError($payload);
+            return self::attendanceError($payload, $old);
         }
         if (in_array($module, self::costModules(), true)) {
             $cost = round((float) ($payload['cost'] ?? 0), 2);
@@ -51,7 +51,7 @@ class WorkerRecords
         return null;
     }
 
-    public static function attendanceError(array $payload): ?string
+    public static function attendanceError(array $payload, ?array $old = null): ?string
     {
         if (Auth::role() !== 'worker') {
             return null;
@@ -59,6 +59,11 @@ class WorkerRecords
         $employeeId = class_exists('TaskAccess') ? TaskAccess::employeeIdForUser() : null;
         if (!$employeeId) {
             return 'Link your account to an employee record before recording attendance.';
+        }
+        // The existing row matters: a worker must not overwrite someone else's
+        // attendance by sending their own employee id in the body.
+        if ($old && (int) ($old['employee_id'] ?? 0) !== $employeeId) {
+            return 'You can only record your own attendance.';
         }
         if ((int) ($payload['employee_id'] ?? 0) !== $employeeId) {
             return 'You can only record your own attendance.';

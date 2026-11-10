@@ -37,7 +37,8 @@ class AuthController
         if (empty($result['ok'])) {
             $raw = (string) ($result['error'] ?? '');
             $friendly = match (true) {
-                str_contains($raw, 'awaiting administrator') => 'Your registration is still awaiting administrator approval.',
+                str_contains($raw, 'Too many sign-in') => 'Too many sign-in attempts. Please wait 15 minutes and try again.',
+                str_contains($raw, 'awaiting administrator') => 'Your account is awaiting administrator approval.',
                 str_contains($raw, 'activation link') => 'Your account was approved. Open the activation link in your email to set your password before signing in.',
                 str_contains($raw, 'not approved') => 'Your registration was not approved. Contact your administrator.',
                 str_contains($raw, 'suspended') => 'Your account is suspended. Contact your administrator.',
@@ -58,41 +59,32 @@ class AuthController
 
     public static function registerForm(): void
     {
-        self::show('signup');
+        flash('info', 'Public sign-up is closed. Ask an administrator to create your account, then sign in.');
+        redirect('login');
     }
 
     public static function register(): void
     {
-        Csrf::verify();
-        $payload = [
-            'username' => input('username'),
-            'email' => input('email'),
-            'phone' => input('phone'),
-            'role' => input('role', 'worker'),
-        ];
-        try {
-            $result = RegistrationService::submitRequest($payload);
-        } catch (Throwable $e) {
-            log_internal_error('registration', $e);
-            flash('error', 'We couldn\'t complete your request. Please try again later.');
-            remember_old($payload);
-            redirect('register');
-        }
-        if (empty($result['ok'])) {
-            flash('error', user_safe_message(
-                (string) ($result['error'] ?? 'Registration failed.'),
-                'Something went wrong. Please try again later.'
-            ));
-            remember_old($payload);
-            redirect('register');
-        }
-        clear_old();
-        // Never surface mail-provider / API diagnostics to applicants.
-        if (empty($result['email_result']['ok'])) {
-            error_log('FarmWise registration mail failed: ' . redact_for_log((string) ($result['email_result']['error'] ?? 'unknown')));
-        }
-        flash('success', 'Registration successful!');
+        flash('info', 'Public sign-up is closed. Ask an administrator to create your account, then sign in.');
         redirect('login');
+    }
+
+    public static function farmPreview(): void
+    {
+        $farm = find_farm_by_code((string) input('code', ''));
+        if (!$farm || ($farm['status'] ?? '') !== 'active') {
+            json_response([
+                'ok' => false,
+                'error' => 'Invalid Farm Code. Please check the code provided by your farm owner.',
+            ]);
+        }
+        json_response([
+            'ok' => true,
+            'farm_name' => (string) ($farm['name'] ?? ''),
+            'location' => trim((string) ($farm['location'] ?? '')) !== ''
+                ? (string) $farm['location']
+                : 'Location not set yet',
+        ]);
     }
 
     public static function activateForm(): void
@@ -227,6 +219,14 @@ class AuthController
         if (Auth::check()) {
             redirect('dashboard');
         }
-        view('auth/auth', ['authTab' => $tab]);
+        $demoSignIn = ['accounts' => [], 'fills' => []];
+        if ($tab === 'login') {
+            try {
+                $demoSignIn = DemoSignIn::forLoginPage();
+            } catch (Throwable $e) {
+                log_internal_error('demo_sign_in', $e);
+            }
+        }
+        view('auth/auth', ['authTab' => $tab, 'demoSignIn' => $demoSignIn]);
     }
 }

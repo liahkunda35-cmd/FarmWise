@@ -23,6 +23,9 @@ class ResourceController
             'attach' => 'edit',
             'file' => 'view',
             'unattach' => 'edit',
+            'report' => 'view',
+            'reset-password' => 'edit',
+            'suggest' => 'view',
         ];
         Auth::authorize($module, $map[$action] ?? 'view');
         $def = WorkerRecords::withoutValuation($def);
@@ -41,6 +44,9 @@ class ResourceController
             'attach' => self::attach($module, $def, $id),
             'file' => self::file($module, $id),
             'unattach' => self::unattach($module, $def, $id),
+            'report' => self::employeeReport($module, $def, $id),
+            'reset-password' => self::employeeResetPassword($module, $def, $id),
+            'suggest' => self::payrollSuggest($module),
             default => abort(404, 'Unknown action.'),
         };
     }
@@ -121,6 +127,27 @@ class ResourceController
         return [$where, $params];
     }
 
+    private static function preloadListRelations(array $columns, array $rows): void
+    {
+        if (!function_exists('fe_rel_preload')) {
+            return;
+        }
+        $relIds = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            foreach ($columns as $name => $field) {
+                if (($field['type'] ?? '') === 'rel' && !empty($field['table']) && !empty($row[$name])) {
+                    $relIds[$field['table']][] = (int) $row[$name];
+                }
+            }
+        }
+        foreach ($relIds as $table => $ids) {
+            fe_rel_preload((string) $table, $ids);
+        }
+    }
+
     private static function dateColumn(array $def): ?string
     {
         foreach ($def['fields'] as $name => $field) {
@@ -133,6 +160,27 @@ class ResourceController
 
     private static function index(string $module, array $def): void
     {
+        if ($module === 'farms' && !Auth::isAdmin()) {
+            $fid = Auth::farmId();
+            if ($fid) {
+                redirect('module/farms/view/' . $fid);
+            }
+            if (Auth::role() === 'owner') {
+                redirect('module/farms/create');
+            }
+        }
+        $listKey = null;
+        if (input('export') !== 'csv') {
+            $listKey = 'list:' . $module . ':' . (int) Auth::id() . ':' . (int) (Auth::farmId() ?? 0) . ':' . md5((string) ($_SERVER['QUERY_STRING'] ?? ''));
+            $cachedList = session_memo_get($listKey);
+            if (is_array($cachedList) && is_string($cachedList['content'] ?? null) && $cachedList['content'] !== '') {
+                view('layouts/app', [
+                    'title' => $cachedList['title'] ?? $def['title'],
+                    'content' => $cachedList['content'],
+                ]);
+                return;
+            }
+        }
         [$where, $params] = self::scopedWhere($def);
         $columns = [];
         foreach ($def['fields'] as $name => $field) {
@@ -164,14 +212,32 @@ class ResourceController
         $total = db()->count($def['table'], $where, $params);
         $pages = max(1, (int) ceil($total / $per));
         $offset = ($page - 1) * $per;
+        $selectCols = ['id'];
+        foreach (array_keys($columns) as $colName) {
+            $selectCols[] = $colName;
+        }
+        if ($module === 'transactions') {
+            $selectCols[] = 'related_module';
+            $selectCols[] = 'related_id';
+        }
+        $selectCols = array_values(array_unique($selectCols));
         $rows = db()->select(
-            'SELECT * FROM ' . $def['table'] . ' WHERE ' . $where . ' ORDER BY ' . $sort . ' ' . $dir . ' LIMIT ' . $per . ' OFFSET ' . $offset,
+            'SELECT ' . implode(', ', $selectCols) . ' FROM ' . $def['table'] . ' WHERE ' . $where . ' ORDER BY ' . $sort . ' ' . $dir . ' LIMIT ' . $per . ' OFFSET ' . $offset,
             $params
         );
+        self::preloadListRelations($columns, $rows);
         $dateCol = self::dateColumn($def);
+        $listVars = compact('module', 'def', 'rows', 'columns', 'total', 'page', 'pages', 'sort', 'dir', 'dateCol');
+        if ($module === 'attendance') {
+            $listVars['attendancePerf'] = self::attendancePerformance($where, $params);
+        }
+        $content = render('resource/list', $listVars);
+        if ($listKey) {
+            session_memo_set($listKey, ['title' => $def['title'], 'content' => $content], 45);
+        }
         view('layouts/app', [
             'title' => $def['title'],
-            'content' => render('resource/list', compact('module', 'def', 'rows', 'columns', 'total', 'page', 'pages', 'sort', 'dir', 'dateCol')),
+            'content' => $content,
         ]);
     }
 
@@ -189,6 +255,16 @@ class ResourceController
 
     private static function form(string $module, array $def, $id): void
     {
+        if ($module === 'farms' && !$id) {
+            if (!Auth::isAdmin() && Auth::role() !== 'owner') {
+                abort(403, 'Only a farm owner can create a farm profile.');
+            }
+            if (!Auth::isAdmin() && Auth::farmId()) {
+                redirect(Auth::can('farms', 'edit')
+                    ? 'module/farms/edit/' . Auth::farmId()
+                    : 'module/farms/view/' . Auth::farmId());
+            }
+        }
         $row = $id ? self::load($def, $id) : [];
         // Quotation → PO workflow: /module/purchase_orders/create?quotation_id=N
         if (!$id && $module === 'purchase_orders') {
@@ -218,6 +294,24 @@ class ResourceController
                         'po_number' => 'PO-' . date('Ymd') . '-' . $qid,
                         'notes' => 'Converted from quotation #' . ($quote['quote_number'] ?? (string) $qid),
                     ]);
+                }
+            }
+        }
+        // Prefill relation IDs from query (e.g. plantings/create?field_id=N from crop rotation map)
+        if (!$id) {
+            foreach ($def['fields'] as $fname => $ffield) {
+                if (!empty($row[$fname])) {
+                    continue;
+                }
+                if (!in_array(($ffield['type'] ?? ''), ['rel', 'select'], true) && !isset($ffield['rules'])) {
+                    // still allow common FK query params below
+                }
+                $qVal = input($fname);
+                if ($qVal === null || $qVal === '') {
+                    continue;
+                }
+                if (in_array($fname, ['field_id', 'farm_id', 'crop_variety_id', 'planting_id', 'employee_id'], true) && is_numeric($qVal)) {
+                    $row[$fname] = (int) $qVal;
                 }
             }
         }
@@ -284,6 +378,14 @@ class ResourceController
         }
         // Farms: build a readable location summary; keep coords optional
         if (($def['table'] ?? '') === 'farms') {
+            // Always persist map snip / boundary (hide_in_form skip would drop clears/updates)
+            $boundaryRaw = trim((string) input('boundary_geojson', ''));
+            if ($boundaryRaw === '') {
+                $payload['boundary_geojson'] = null;
+            } else {
+                $decoded = json_decode($boundaryRaw, true);
+                $payload['boundary_geojson'] = is_array($decoded) ? json_encode($decoded) : null;
+            }
             $parts = array_filter([
                 $payload['town'] ?? null,
                 $payload['district'] ?? null,
@@ -324,6 +426,45 @@ class ResourceController
         if (($def['table'] ?? '') === 'loans') {
             if (($payload['balance'] === null || $payload['balance'] === '') && $payload['principal'] !== null && $payload['principal'] !== '') {
                 $payload['balance'] = $payload['principal'];
+            }
+        }
+        if (($def['table'] ?? '') === 'employees') {
+            Schema::ensureEmployeeSchema(db());
+            if (($payload['status'] ?? '') === '' || $payload['status'] === null) {
+                $payload['status'] = 'active';
+            }
+            if (($payload['email'] ?? '') === '' && (string) input('login_email') !== '') {
+                $payload['email'] = strtolower(trim((string) input('login_email')));
+            }
+        }
+        if (($def['table'] ?? '') === 'market_prices') {
+            if (($payload['source'] ?? '') === '') {
+                $payload['source'] = 'farmer';
+            }
+            if (($payload['source_label'] ?? '') === '' && ($payload['source'] ?? '') === 'farmer') {
+                $payload['source_label'] = 'Farmer observation';
+            }
+            if (($payload['currency'] ?? '') === '') {
+                $payload['currency'] = 'ZMW';
+            }
+            if (($payload['unit'] ?? '') === '') {
+                $payload['unit'] = 'KG';
+            }
+            $quoted = isset($payload['price']) && $payload['price'] !== '' ? (float) $payload['price'] : null;
+            $perKg = isset($payload['price_per_kg']) && $payload['price_per_kg'] !== '' ? (float) $payload['price_per_kg'] : null;
+            if ($perKg === null && $quoted !== null && class_exists('MarketPriceSync')) {
+                $converted = MarketPriceSync::toPricePerKg($quoted, (string) ($payload['unit'] ?? 'KG'));
+                if ($converted !== null) {
+                    $payload['price_per_kg'] = $converted;
+                    $perKg = $converted;
+                }
+            }
+            if ($quoted === null && $perKg !== null) {
+                $payload['price'] = $perKg;
+            }
+            // Legacy NOT NULL safety
+            if (!isset($payload['price_per_kg']) || $payload['price_per_kg'] === '' || $payload['price_per_kg'] === null) {
+                $payload['price_per_kg'] = $quoted ?? 0;
             }
         }
         foreach ($def['fields'] as $name => $field) {
@@ -503,15 +644,15 @@ class ResourceController
                         $payload[$payField] = $previousPay[$payField] ?? null;
                     }
                 }
-            } elseif (in_array($nextStatus, ['approved', 'paid'], true)) {
-                $daysBlank = ($payload['days_worked'] ?? null) === null || $payload['days_worked'] === '';
-                $grossBlank = ($payload['gross_pay'] ?? null) === null || $payload['gross_pay'] === '';
-                if ($daysBlank || $grossBlank) {
-                    $errors['status'] = 'Save a reviewed draft with days and pay before approving or marking payroll paid.';
+            } else {
+                $payload = WorkflowService::finalizePayrollPayload($payload, $previousPay ?: null);
+                if (in_array($nextStatus, ['approved', 'paid'], true)) {
+                    $daysBlank = ($payload['days_worked'] ?? null) === null || $payload['days_worked'] === '';
+                    $grossBlank = ($payload['gross_pay'] ?? null) === null || $payload['gross_pay'] === '';
+                    if ($daysBlank || $grossBlank) {
+                        $errors['status'] = 'Add the period and employee (or days worked) so pay can be calculated before approving or marking paid.';
+                    }
                 }
-            }
-            if (!$lockedPay) {
-                $payload = WorkflowService::applyAttendanceSuggestion($payload, $previousPay ?: null);
             }
         }
         if (!empty($def['unique'])) {
@@ -527,6 +668,22 @@ class ResourceController
             remember_old($payload);
             flash('error', 'Please correct the highlighted fields.');
             redirect($id ? 'module/' . $module . '/edit/' . $id : 'module/' . $module . '/create');
+        }
+        if (($def['table'] ?? '') === 'farms' && !$id) {
+            if (!Auth::isAdmin() && Auth::role() !== 'owner') {
+                abort(403, 'Only a farm owner can create a farm profile.');
+            }
+            if (!Auth::isAdmin() && Auth::farmId()) {
+                flash('success', 'Your farm profile is already set up.');
+                redirect('module/farms/view/' . Auth::farmId());
+            }
+            $payload['join_code'] = generate_join_code((string) ($payload['name'] ?? ''));
+            if (Auth::role() === 'owner') {
+                $payload['owner_id'] = Auth::id();
+            }
+            if (empty($payload['status'])) {
+                $payload['status'] = 'active';
+            }
         }
         clear_old();
         if ($id) {
@@ -545,7 +702,14 @@ class ResourceController
                 redirect('module/' . $module . '/edit/' . $id);
             }
             Audit::log('update', $module, $id, $def['singular'] . ' updated');
-            flash('success', $def['singular'] . ' updated.');
+            if (($def['table'] ?? '') === 'employees') {
+                self::maybeCreateEmployeeLogin((int) $id, $payload, false);
+            } elseif (($def['table'] ?? '') === 'payroll') {
+                flash('success', 'Pay slip generated.');
+                redirect('module/payroll/view/' . $id);
+            } else {
+                flash('success', $def['singular'] . ' updated.');
+            }
         } else {
             $newId = 0;
             db()->beginTransaction();
@@ -561,6 +725,9 @@ class ResourceController
                     }
                 }
                 $newId = (int) db()->insert($def['table'], $payload);
+                if (($def['table'] ?? '') === 'farms' && Auth::role() === 'owner' && Auth::id()) {
+                    RegistrationService::syncFarmAssignments((int) Auth::id(), [$newId], $newId);
+                }
                 OperationHooks::afterSave($def, $payload, $newId, true, null);
                 db()->commit();
             } catch (Throwable $e) {
@@ -579,9 +746,233 @@ class ResourceController
                 redirect('module/' . $module . '/create');
             }
             Audit::log('create', $module, $newId, $def['singular'] . ' created');
-            flash('success', $def['singular'] . ' saved.');
+            if (($def['table'] ?? '') === 'farms') {
+                Auth::clearCache();
+                Auth::setActiveFarm($newId);
+                if (Auth::id() && table_exists('user_farms')) {
+                    $link = db()->first('SELECT id FROM user_farms WHERE user_id = ? AND farm_id = ?', [Auth::id(), $newId]);
+                    if (!$link) {
+                        db()->insert('user_farms', [
+                            'user_id' => Auth::id(),
+                            'farm_id' => $newId,
+                            'is_primary' => 1,
+                        ]);
+                    }
+                }
+                $code = (string) ($payload['join_code'] ?? '');
+                flash('success', $code !== '' ? 'Farm saved. Farm Code: ' . $code : 'Farm saved.');
+                redirect('module/farms/view/' . $newId);
+            }
+            if (($def['table'] ?? '') === 'employees') {
+                self::maybeCreateEmployeeLogin($newId, $payload, true);
+            } elseif (($def['table'] ?? '') === 'payroll') {
+                flash('success', 'Pay slip generated.');
+                redirect('module/payroll/view/' . $newId);
+            } else {
+                flash('success', $def['singular'] . ' saved.');
+            }
         }
         redirect('module/' . $module);
+    }
+
+    private static function payrollSuggest(string $module): void
+    {
+        if ($module !== 'payroll') {
+            abort(404, 'Unknown action.');
+        }
+        header('Content-Type: application/json; charset=utf-8');
+        $employeeId = (int) input('employee_id', 0);
+        $start = trim((string) input('period_start', ''));
+        $end = trim((string) input('period_end', ''));
+        $deductions = is_numeric(input('deductions')) ? (float) input('deductions') : 0.0;
+        $employee = $employeeId > 0 ? db()->find('employees', $employeeId) : null;
+        $farmId = (int) ($employee['farm_id'] ?? input('farm_id', Auth::farmId() ?: 0));
+        if (!$employee || !Auth::canAccessFarm($farmId)) {
+            echo json_encode(['ok' => false, 'error' => 'Choose a valid employee on your farm.']);
+            exit;
+        }
+        $draft = WorkflowService::finalizePayrollPayload([
+            'employee_id' => $employeeId,
+            'farm_id' => $farmId,
+            'period_start' => $start,
+            'period_end' => $end,
+            'days_worked' => input('days_worked'),
+            'gross_pay' => input('gross_pay'),
+            'deductions' => $deductions,
+            'net_pay' => null,
+            'status' => 'draft',
+            'calculation_note' => '',
+        ], null);
+        echo json_encode([
+            'ok' => true,
+            'employee' => [
+                'id' => (int) $employee['id'],
+                'name' => (string) ($employee['name'] ?? ''),
+                'daily_rate' => $employee['daily_rate'] ?? null,
+                'role_title' => (string) ($employee['role_title'] ?? ''),
+            ],
+            'days_worked' => $draft['days_worked'] ?? null,
+            'gross_pay' => $draft['gross_pay'] ?? null,
+            'deductions' => $deductions,
+            'net_pay' => $draft['net_pay'] ?? null,
+            'calculation_note' => $draft['calculation_note'] ?? '',
+        ]);
+        exit;
+    }
+
+    private static function maybeCreateEmployeeLogin(int $employeeId, array $payload, bool $created): void
+    {
+        Schema::ensureEmployeeSchema(db());
+        $employee = db()->find('employees', $employeeId);
+        if (!$employee) {
+            flash('error', 'Employee could not be loaded after save.');
+            return;
+        }
+        $wantLogin = (string) input('create_login') === '1';
+        if (!$wantLogin) {
+            flash('success', $created ? 'Employee successfully added!' : 'Employee updated.');
+            return;
+        }
+        if (!empty($employee['user_id'])) {
+            flash('success', ($created ? 'Employee successfully added! ' : 'Employee updated. ')
+                . 'A login account is already linked.');
+            return;
+        }
+        $result = EmployeeAccounts::createForEmployee($employee, [
+            'email' => (string) (input('login_email') ?: ($payload['email'] ?? '')),
+            'username' => (string) input('login_username'),
+            'temp_password' => (string) input('temp_password'),
+        ]);
+        if (!$result['ok']) {
+            flash('error', ($created ? 'Employee saved, but login was not created: ' : 'Employee updated, but login was not created: ')
+                . ($result['error'] ?? 'Unknown error'));
+            return;
+        }
+        db()->update('employees', ['user_id' => $result['user_id']], $employeeId);
+        $_SESSION['_employee_temp_creds'] = [
+            'employee_id' => $employeeId,
+            'name' => $employee['name'] ?? '',
+            'username' => $result['username'] ?? '',
+            'email' => $result['email'] ?? '',
+            'temp_password' => $result['temp_password'] ?? '',
+        ];
+
+        $mailNote = '';
+        $loginEmail = (string) ($result['email'] ?? '');
+        $tempPassword = (string) ($result['temp_password'] ?? '');
+        $mailMeta = ['ok' => false, 'error' => null, 'mailto' => '', 'subject' => '', 'body' => ''];
+        if ($loginEmail !== '' && !str_ends_with($loginEmail, '@employees.farmwise.local') && $tempPassword !== '') {
+            $farm = !empty($employee['farm_id']) ? db()->find('farms', (int) $employee['farm_id']) : null;
+            try {
+                $mail = AccountMail::employeeLoginInvite([
+                    'id' => (int) $result['user_id'],
+                    'name' => (string) ($employee['name'] ?? ''),
+                    'email' => $loginEmail,
+                    'username' => (string) ($result['username'] ?? ''),
+                    'farm_id' => $employee['farm_id'] ?? null,
+                ], $tempPassword, is_array($farm) ? $farm : null);
+                $mailMeta = [
+                    'ok' => !empty($mail['ok']),
+                    'error' => $mail['error'] ?? null,
+                    'mailto' => (string) ($mail['mailto'] ?? ''),
+                    'subject' => (string) ($mail['subject'] ?? ''),
+                    'body' => (string) ($mail['body'] ?? ''),
+                ];
+                if (!empty($mail['ok'])) {
+                    $mailNote = ' Login details were emailed to ' . $loginEmail . '.';
+                } else {
+                    $mailNote = ' Automatic email failed (' . ($mail['error'] ?? 'mail delivery blocked') . '). Use “Open email app” below to send the details.';
+                }
+            } catch (Throwable $e) {
+                $mailNote = ' Automatic email failed. Use “Open email app” below to send the details.';
+                error_log('employee login mail failed: ' . $e->getMessage());
+            }
+        }
+        $_SESSION['_employee_temp_creds']['mail_ok'] = !empty($mailMeta['ok']);
+        $_SESSION['_employee_temp_creds']['mail_error'] = $mailMeta['error'];
+        $_SESSION['_employee_temp_creds']['mailto'] = $mailMeta['mailto'];
+
+        flash(
+            'success',
+            ($created
+                ? 'Employee successfully added! Login account created.'
+                : 'Employee updated. Login account created.')
+            . $mailNote
+            . ' The employee must change the password on first sign-in.'
+        );
+    }
+
+    private static function employeeReport(string $module, array $def, $id): void
+    {
+        if ($module !== 'employees') {
+            abort(404, 'Unknown action.');
+        }
+        $row = self::load($def, $id);
+        $data = EmployeeReports::buildIndividual($row);
+        $bytes = EmployeeReports::pdfBytes($data);
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . EmployeeReports::filename($row) . '"');
+        header('Content-Length: ' . strlen($bytes));
+        echo $bytes;
+        exit;
+    }
+
+    private static function employeeResetPassword(string $module, array $def, $id): void
+    {
+        if ($module !== 'employees' || !is_post()) {
+            abort(404, 'Unknown action.');
+        }
+        Csrf::verify();
+        $row = self::load($def, $id);
+        if (empty($row['user_id'])) {
+            flash('error', 'This employee has no linked login account.');
+            redirect('module/employees/view/' . $id);
+        }
+        $result = EmployeeAccounts::resetTemporaryPassword((int) $row['user_id']);
+        if (!$result['ok']) {
+            flash('error', $result['error'] ?? 'Could not reset password.');
+            redirect('module/employees/view/' . $id);
+        }
+        $_SESSION['_employee_temp_creds'] = [
+            'employee_id' => (int) $id,
+            'name' => $row['name'] ?? '',
+            'username' => $result['username'] ?? '',
+            'email' => $result['email'] ?? '',
+            'temp_password' => $result['temp_password'] ?? '',
+        ];
+        $mailNote = '';
+        $loginEmail = (string) ($result['email'] ?? '');
+        $tempPassword = (string) ($result['temp_password'] ?? '');
+        $mailMeta = ['ok' => false, 'error' => null, 'mailto' => ''];
+        if ($loginEmail !== '' && !str_ends_with($loginEmail, '@employees.farmwise.local') && $tempPassword !== '') {
+            $farm = !empty($row['farm_id']) ? db()->find('farms', (int) $row['farm_id']) : null;
+            try {
+                $mail = AccountMail::employeeLoginInvite([
+                    'id' => (int) $row['user_id'],
+                    'name' => (string) ($row['name'] ?? ''),
+                    'email' => $loginEmail,
+                    'username' => (string) ($result['username'] ?? ''),
+                    'farm_id' => $row['farm_id'] ?? null,
+                ], $tempPassword, is_array($farm) ? $farm : null);
+                $mailMeta = [
+                    'ok' => !empty($mail['ok']),
+                    'error' => $mail['error'] ?? null,
+                    'mailto' => (string) ($mail['mailto'] ?? ''),
+                ];
+                if (!empty($mail['ok'])) {
+                    $mailNote = ' Details emailed to ' . $loginEmail . '.';
+                } else {
+                    $mailNote = ' Automatic email failed. Use “Open email app” below.';
+                }
+            } catch (Throwable $e) {
+                $mailNote = ' Automatic email failed. Use “Open email app” below.';
+            }
+        }
+        $_SESSION['_employee_temp_creds']['mail_ok'] = !empty($mailMeta['ok']);
+        $_SESSION['_employee_temp_creds']['mail_error'] = $mailMeta['error'];
+        $_SESSION['_employee_temp_creds']['mailto'] = $mailMeta['mailto'];
+        flash('success', 'Temporary password re-issued.' . $mailNote);
+        redirect('module/employees/view/' . $id);
     }
 
     private static function destroy(string $module, array $def, $id): void
@@ -809,6 +1200,50 @@ class ResourceController
             $add('Fields', 'fields', 'name', 'SELECT * FROM fields WHERE farm_id = ? ORDER BY name LIMIT 8', [$id]);
         }
         return $groups;
+    }
+
+    /** @return array{total:int,present:int,absent:int,leave:int,half_day:int,rate:float} */
+    private static function attendancePerformance(string $where, array $params): array
+    {
+        $blank = ['total' => 0, 'present' => 0, 'absent' => 0, 'leave' => 0, 'half_day' => 0, 'rate' => 0.0];
+        if (!table_exists('attendance')) {
+            return $blank;
+        }
+        try {
+            $row = db()->first(
+                "SELECT
+                    COUNT(*)::int AS total,
+                    COUNT(*) FILTER (WHERE status = 'present')::int AS present,
+                    COUNT(*) FILTER (WHERE status = 'absent')::int AS absent,
+                    COUNT(*) FILTER (WHERE status = 'leave')::int AS leave,
+                    COUNT(*) FILTER (WHERE status = 'half_day')::int AS half_day
+                 FROM attendance WHERE {$where}",
+                $params
+            );
+        } catch (Throwable $e) {
+            // SQLite / older drivers without FILTER
+            $rows = db()->select('SELECT status FROM attendance WHERE ' . $where, $params);
+            $row = ['total' => count($rows), 'present' => 0, 'absent' => 0, 'leave' => 0, 'half_day' => 0];
+            foreach ($rows as $r) {
+                $s = (string) ($r['status'] ?? '');
+                if (isset($row[$s])) {
+                    $row[$s]++;
+                }
+            }
+        }
+        $total = (int) ($row['total'] ?? 0);
+        $present = (int) ($row['present'] ?? 0);
+        $half = (int) ($row['half_day'] ?? 0);
+        $score = $present + ($half * 0.5);
+        $rate = $total > 0 ? round(($score / $total) * 100, 1) : 0.0;
+        return [
+            'total' => $total,
+            'present' => $present,
+            'absent' => (int) ($row['absent'] ?? 0),
+            'leave' => (int) ($row['leave'] ?? 0),
+            'half_day' => $half,
+            'rate' => $rate,
+        ];
     }
 
     public static function displayValue(array $field, $value): string

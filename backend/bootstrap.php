@@ -92,11 +92,20 @@ require __DIR__ . '/services/SslCa.php';
 require __DIR__ . '/services/NexusMailer.php';
 require __DIR__ . '/services/AccountMail.php';
 require __DIR__ . '/services/RegistrationService.php';
+require __DIR__ . '/services/DemoSignIn.php';
 require __DIR__ . '/services/ReversalService.php';
 require __DIR__ . '/services/SmsGateway.php';
 require __DIR__ . '/services/MessageDispatcher.php';
 require __DIR__ . '/services/GeminiService.php';
 require __DIR__ . '/services/FarmAssistantContext.php';
+require __DIR__ . '/services/SimpleXlsxReader.php';
+require __DIR__ . '/services/MarketPriceSync.php';
+require __DIR__ . '/services/ZamstatsAgriImport.php';
+require __DIR__ . '/services/AgriPatternService.php';
+require __DIR__ . '/services/EmployeeAccounts.php';
+require __DIR__ . '/services/EmployeeReports.php';
+require __DIR__ . '/services/CropRotationMapService.php';
+require __DIR__ . '/services/CropRotationReports.php';
 require __DIR__ . '/controllers/ApiController.php';
 require __DIR__ . '/controllers/AssistantController.php';
 require __DIR__ . '/services/PresentationData.php';
@@ -142,6 +151,37 @@ try {
             Schema::ensureScoutFollowUpIndex($db);
             @file_put_contents($scoutFlag, (string) time());
         }
+        $codeFlag = dirname(__DIR__) . '/storage/.schema_mig_farmcode1';
+        if (!is_file($codeFlag)) {
+            Schema::ensureFarmCodeSecurity($db);
+            @file_put_contents($codeFlag, (string) time());
+        }
+        $perfFlag = dirname(__DIR__) . '/storage/.schema_mig_perf1';
+        if (!is_file($perfFlag)) {
+            Schema::ensureListIndexes($db);
+            @file_put_contents($perfFlag, (string) time());
+        }
+        $agriFlag = dirname(__DIR__) . '/storage/.schema_mig_agri1';
+        if (!is_file($agriFlag)) {
+            Schema::ensureMarketAndAgriSchema($db);
+            @file_put_contents($agriFlag, (string) time());
+        }
+        $empFlag = dirname(__DIR__) . '/storage/.schema_mig_emp1';
+        if (!is_file($empFlag)) {
+            Schema::ensureEmployeeSchema($db);
+            @file_put_contents($empFlag, (string) time());
+        }
+        $opsUiFlag = dirname(__DIR__) . '/storage/.schema_mig_opsui1';
+        if (!is_file($opsUiFlag)) {
+            Schema::ensureOpsUiSchema($db);
+            Schema::purgeDemoOpsData($db);
+            @file_put_contents($opsUiFlag, (string) time());
+        }
+        $fieldsDescFlag = dirname(__DIR__) . '/storage/.schema_mig_fieldsdesc1';
+        if (!is_file($fieldsDescFlag)) {
+            Schema::ensureOpsUiSchema($db);
+            @file_put_contents($fieldsDescFlag, (string) time());
+        }
     }
     // Timezone: prefer session cache, then one settings lookup
     $tz = $_SESSION['_tz'] ?? null;
@@ -156,10 +196,16 @@ try {
     }
 } catch (Throwable $e) {
     $msg = $e->getMessage();
-    $neonWake = str_contains(strtolower($msg), 'closed the connection')
-        || str_contains(strtolower($msg), 'server closed')
-        || str_contains(strtolower($msg), 'could not connect')
-        || str_contains(strtolower($msg), 'timeout');
+    $low = strtolower($msg);
+    $neonWake = str_contains($low, 'closed the connection')
+        || str_contains($low, 'server closed')
+        || str_contains($low, 'could not connect')
+        || str_contains($low, 'timeout')
+        || str_contains($low, 'connection refused')
+        || str_contains($low, 'endpoint id is not specified')
+        || str_contains($low, 'the database system is starting')
+        || str_contains($low, 'remaining connection slots')
+        || str_contains($low, 'sqlstate[08006]');
     if (PHP_SAPI === 'cli') {
         fwrite(STDERR, 'Database error: ' . redact_for_log($msg) . PHP_EOL);
         if ($neonWake) {
@@ -169,31 +215,27 @@ try {
     }
     http_response_code(503);
     header('Content-Type: text/html; charset=utf-8');
-    if ($neonWake) {
-        // Auto-retry while Neon compute wakes from idle
-        echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
-            . '<meta http-equiv="refresh" content="3">'
-            . '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            . '<title>Starting FarmWise database…</title>'
-            . '<style>body{font-family:system-ui,sans-serif;background:#F5F0E3;color:#1D2B22;display:grid;place-items:center;min-height:100vh;margin:0;padding:1.5rem;text-align:center}'
-            . '.card{max-width:28rem;background:#fff;border-radius:18px;padding:1.5rem;box-shadow:0 10px 30px rgba(16,43,31,.08)}'
-            . 'h1{font-size:1.25rem;margin:0 0 .6rem}p{margin:.4rem 0;line-height:1.5;color:#687267}code{font-size:.8rem}</style></head><body>'
-            . '<div class="card"><h1>Waking the FarmWise database…</h1>'
-            . '<p>Neon Postgres was idle and is starting up. This page will retry automatically in a few seconds.</p>'
-            . '<p><small>If this keeps failing, open the Neon console and start the <strong>Farmawise</strong> project compute, then refresh.</small></p>'
-            . '</div></body></html>';
-        exit;
-    }
-    log_internal_error('database', $e);
+    // Always auto-retry: Neon idle wake is the usual cause on local demo / projector setups
+    $title = $neonWake ? 'Starting FarmWise database…' : 'FarmWise is temporarily unavailable';
+    $heading = $neonWake ? 'Waking the FarmWise database…' : 'FarmWise is temporarily unavailable';
+    $body = $neonWake
+        ? 'Neon Postgres was idle and is starting up. This page will retry automatically in a few seconds.'
+        : 'The database could not be reached. Retrying automatically…';
     echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        . '<meta http-equiv="refresh" content="3">'
         . '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        . '<title>FarmWise is unavailable</title>'
+        . '<title>' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</title>'
         . '<style>body{font-family:system-ui,sans-serif;background:#F5F0E3;color:#1D2B22;display:grid;place-items:center;min-height:100vh;margin:0;padding:1.5rem;text-align:center}'
         . '.card{max-width:28rem;background:#fff;border-radius:18px;padding:1.5rem;box-shadow:0 10px 30px rgba(16,43,31,.08)}'
-        . 'h1{font-size:1.25rem;margin:0 0 .6rem}p{margin:.4rem 0;line-height:1.5;color:#687267}</style></head><body>'
-        . '<div class="card"><h1>FarmWise is temporarily unavailable</h1>'
-        . '<p>The database could not be reached. Please try again in a moment.</p>'
-        . '<p>If this continues, contact your administrator. Technical details are recorded on the server.</p>'
+        . 'h1{font-size:1.25rem;margin:0 0 .6rem}p{margin:.4rem 0;line-height:1.5;color:#687267}'
+        . 'a.btn{display:inline-block;margin-top:.85rem;padding:.65rem 1.1rem;border-radius:999px;background:#D9B66F;color:#1a1408;text-decoration:none;font-weight:650}</style></head><body>'
+        . '<div class="card"><h1>' . htmlspecialchars($heading, ENT_QUOTES, 'UTF-8') . '</h1>'
+        . '<p>' . htmlspecialchars($body, ENT_QUOTES, 'UTF-8') . '</p>'
+        . '<p><small>If this keeps failing, confirm the Neon project compute is awake, then refresh.</small></p>'
+        . '<p><a class="btn" href="' . htmlspecialchars($_SERVER['REQUEST_URI'] ?? '/', ENT_QUOTES, 'UTF-8') . '">Retry now</a></p>'
         . '</div></body></html>';
+    if (!$neonWake) {
+        log_internal_error('database', $e);
+    }
     exit;
 }

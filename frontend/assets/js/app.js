@@ -1,6 +1,50 @@
 document.addEventListener('DOMContentLoaded', () => {
   if (window.lucide) lucide.createIcons();
 
+  const signupRole = document.getElementById('signup-role');
+  const farmBox = document.querySelector('[data-farm-code-box]');
+  if (signupRole && farmBox) {
+    const farmInput = farmBox.querySelector('input');
+    const preview = farmBox.querySelector('[data-farm-preview]');
+    const syncFarmCode = () => {
+      const owner = signupRole.value === 'owner';
+      farmBox.hidden = owner;
+      if (farmInput) {
+        farmInput.required = !owner;
+        if (owner) farmInput.value = '';
+      }
+      if (owner && preview) preview.textContent = '';
+    };
+    let farmTimer = null;
+    const lookupFarm = () => {
+      if (!farmInput || signupRole.value === 'owner') return;
+      const code = farmInput.value.trim();
+      if (code.length < 4) {
+        if (preview) preview.textContent = '';
+        return;
+      }
+      fetch((window.IFMS_BASE || '') + '/register/farm-preview?code=' + encodeURIComponent(code))
+        .then((response) => response.json())
+        .then((data) => {
+          if (!preview) return;
+          preview.textContent = data && data.ok
+            ? ('Joining ' + data.farm_name + (data.location ? ' — ' + data.location : ''))
+            : ((data && data.error) || 'Invalid Farm Code. Please check the code provided by your farm owner.');
+        })
+        .catch(() => {
+          if (preview) preview.textContent = '';
+        });
+    };
+    signupRole.addEventListener('change', syncFarmCode);
+    if (farmInput) {
+      farmInput.addEventListener('input', () => {
+        clearTimeout(farmTimer);
+        farmTimer = setTimeout(lookupFarm, 350);
+      });
+    }
+    syncFarmCode();
+  }
+
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const isCoarsePointer = window.matchMedia('(hover: none), (pointer: coarse)').matches;
 
@@ -26,10 +70,8 @@ document.addEventListener('DOMContentLoaded', () => {
           showReveal(entry.target);
           io.unobserve(entry.target);
         });
-      }, { rootMargin: '0px 0px -4% 0px', threshold: 0.08 });
+      }, { rootMargin: '0px 0px -12% 0px', threshold: 0.18 });
       revealEls.forEach((el) => io.observe(el));
-      // Safety: never leave section images/text permanently hidden
-      window.setTimeout(() => revealEls.forEach(showReveal), 3500);
     } else {
       revealEls.forEach(showReveal);
     }
@@ -301,13 +343,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Point Leaflet default markers at local vendor images
+  // Default Leaflet markers → mustard location pin (no broken PNG)
   if (window.L && L.Icon && L.Icon.Default) {
-    const iconBase = (window.IFMS_BASE || '') + '/assets/vendor/leaflet/images/';
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="42" viewBox="0 0 32 42">' +
+      '<path fill="#c9920f" stroke="#1a1408" stroke-width="1.2" d="M16 1.5c-7.2 0-13 5.8-13 13 0 9.8 13 25.5 13 25.5S29 24.3 29 14.5c0-7.2-5.8-13-13-13z"/>' +
+      '<circle cx="16" cy="14.5" r="5.2" fill="#fff8e8"/>' +
+      '</svg>';
+    const pinUrl = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+    delete L.Icon.Default.prototype._getIconUrl;
     L.Icon.Default.mergeOptions({
-      iconUrl: iconBase + 'marker-icon.png',
-      iconRetinaUrl: iconBase + 'marker-icon-2x.png',
-      shadowUrl: iconBase + 'marker-shadow.png'
+      iconUrl: pinUrl,
+      iconRetinaUrl: pinUrl,
+      shadowUrl: '',
+      iconSize: [32, 42],
+      iconAnchor: [16, 40],
+      popupAnchor: [0, -36],
+      shadowSize: [0, 0]
     });
   }
 
@@ -688,8 +740,7 @@ document.addEventListener('DOMContentLoaded', () => {
       options: { plugins: { legend: { display: cfg.type === 'doughnut' } }, scales: cfg.type === 'doughnut' ? {} : { y: { beginAtZero: true } } }
     });
   }
-  // Farm join code is temporarily removed from registration.
-  // Managers/workers join later from the dashboard.
+  // Registration and login do not ask for a farm code. Administrators assign farms.
 
   // Shared client-side form validation (Zambia mobile + username/email/role/login)
   // ZICTA mobile NDCs: Airtel 57/77/97, MTN 56/76/96, Zamtel 55/75/95
@@ -939,6 +990,80 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  (function initQuickSignIn() {
+    const form = document.querySelector('[data-quick-signin]');
+    const input = form && form.querySelector('[data-quick-signin-input]');
+    const panel = document.getElementById('quick-signin');
+    const password = form && form.querySelector('[data-quick-signin-password]');
+    if (!form || !input || !panel) return;
+
+    let fills = {};
+    const fillNode = document.getElementById('quick-signin-fills');
+    if (fillNode) {
+      try {
+        fills = JSON.parse(fillNode.textContent || '{}') || {};
+      } catch (err) {
+        fills = {};
+      }
+    }
+
+    const open = () => {
+      panel.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    };
+    const close = () => {
+      panel.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+    };
+
+    input.addEventListener('focus', open);
+    input.addEventListener('click', open);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') close();
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        open();
+        const first = panel.querySelector('.quick-signin-option');
+        if (first) first.focus();
+      }
+    });
+
+    panel.querySelectorAll('.quick-signin-option').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const identity = btn.getAttribute('data-identity') || '';
+        const email = btn.getAttribute('data-email') || '';
+        const canFill = btn.getAttribute('data-can-fill') === '1';
+        input.value = identity;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        if (password && canFill && fills[email]) {
+          try {
+            password.value = atob(fills[email]);
+            password.dispatchEvent(new Event('input', { bubbles: true }));
+          } catch (err) {
+            password.value = '';
+          }
+        } else if (password) {
+          password.value = '';
+          password.focus();
+        }
+        close();
+        if (password && password.value) {
+          const submit = form.querySelector('button[type="submit"]');
+          if (submit) submit.focus();
+        }
+      });
+    });
+
+    document.addEventListener('click', (event) => {
+      if (panel.hidden) return;
+      const target = event.target;
+      if (target === input || panel.contains(target) || (form.contains(target) && target.closest('.auth-quick-wrap'))) {
+        return;
+      }
+      close();
+    });
+  })();
+
   if (window.IFMS_WEATHER_CHART && window.Chart) {
     const w = window.IFMS_WEATHER_CHART;
     new Chart(document.getElementById('forecastChart'), {
@@ -958,5 +1083,82 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
     });
+  }
+
+  if (window.IFMS_MARKET_CHART && window.Chart) {
+    const m = window.IFMS_MARKET_CHART;
+    const el = document.getElementById('marketPriceChart');
+    if (el) {
+      new Chart(el, {
+        type: 'line',
+        data: {
+          labels: m.labels || [],
+          datasets: [{
+            label: (m.crop || 'Crop') + ' ZMW/kg',
+            data: m.values || [],
+            borderColor: '#1c3b2b',
+            backgroundColor: 'rgba(28,59,43,.12)',
+            tension: 0.25,
+            spanGaps: false
+          }]
+        },
+        options: { scales: { y: { beginAtZero: false } }, plugins: { legend: { display: true } } }
+      });
+    }
+  }
+
+  if (window.IFMS_AGRI_TREND && window.Chart) {
+    const t = window.IFMS_AGRI_TREND;
+    const prod = document.getElementById('agriProdChart');
+    const yld = document.getElementById('agriYieldChart');
+    if (prod) {
+      new Chart(prod, {
+        type: 'bar',
+        data: {
+          labels: t.labels || [],
+          datasets: [{ label: 'Production (mt)', data: t.production || [], backgroundColor: '#1c3b2b' }]
+        },
+        options: { scales: { y: { beginAtZero: true } }, plugins: { legend: { display: true } } }
+      });
+    }
+    if (yld) {
+      new Chart(yld, {
+        type: 'line',
+        data: {
+          labels: t.labels || [],
+          datasets: [{
+            label: 'Yield (mt/ha)',
+            data: t.yield || [],
+            borderColor: '#c4a35a',
+            tension: 0.25,
+            spanGaps: false
+          }]
+        },
+        options: { scales: { y: { beginAtZero: true } } }
+      });
+    }
+  }
+
+  if (window.IFMS_AGRI_PROV && window.Chart) {
+    const p = window.IFMS_AGRI_PROV;
+    const el = document.getElementById('agriProvChart');
+    if (el) {
+      new Chart(el, {
+        type: 'bar',
+        data: {
+          labels: p.labels || [],
+          datasets: [
+            { label: 'Production (mt)', data: p.production || [], backgroundColor: '#1c3b2b' },
+            { label: 'Yield (mt/ha)', data: p.yield || [], backgroundColor: '#c4a35a', yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          scales: {
+            y: { beginAtZero: true, position: 'left' },
+            y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
+          }
+        }
+      });
+    }
   }
 });

@@ -4,7 +4,20 @@ $unread = fe_unread_count(fe_id(), fe_farm_id());
 $farmChoices = fe_accessible_farms();
 $activeFarm = fe_active_farm();
 $isDashboard = rtrim(current_path(), '/') === '/dashboard';
-$assetV = 'p20';
+$assetV = 'p62';
+$pagePath = trim(current_path(), '/');
+$needsChart = $pagePath === 'dashboard' || str_starts_with($pagePath, 'reports') || str_starts_with($pagePath, 'forecasts') || $pagePath === 'weather' || str_starts_with($pagePath, 'market') || str_starts_with($pagePath, 'agri');
+$needsMap = $pagePath === 'map'
+    || $pagePath === 'fields-planner'
+    || $pagePath === 'crop-rotation'
+    || str_starts_with($pagePath, 'module/farms')
+    || str_starts_with($pagePath, 'module/fields')
+    || $pagePath === 'weather';
+$employeeCreds = null;
+if (!empty($_SESSION['_employee_temp_creds']) && is_array($_SESSION['_employee_temp_creds'])) {
+    $employeeCreds = $_SESSION['_employee_temp_creds'];
+    unset($_SESSION['_employee_temp_creds']);
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -13,11 +26,13 @@ $assetV = 'p20';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <?= brand_head($title ?? 'Dashboard') ?>
     <link rel="stylesheet" href="<?= e(asset('vendor/fonts/fonts.css')) ?>?v=<?= e($assetV) ?>">
+    <?php if ($needsMap): ?>
     <link rel="stylesheet" href="<?= e(asset('vendor/leaflet/leaflet.css')) ?>?v=<?= e($assetV) ?>">
     <link rel="stylesheet" href="<?= e(asset('vendor/leaflet-draw/leaflet.draw.css')) ?>?v=<?= e($assetV) ?>">
+    <?php endif; ?>
     <link rel="stylesheet" href="<?= e(asset('css/app.css')) ?>?v=<?= e($assetV) ?>">
 </head>
-<body class="app-body<?= $isDashboard ? ' is-dashboard' : '' ?>">
+<body class="app-body<?= $isDashboard ? ' is-dashboard' : '' ?><?= fe_is_admin() ? ' is-admin' : '' ?>">
 <button class="nav-toggle" type="button" data-nav-toggle aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">☰</button>
 <aside class="sidebar" id="sidebar">
     <a class="brand brand-sidebar" href="<?= e(url('dashboard')) ?>">
@@ -141,6 +156,49 @@ $assetV = 'p20';
         </div>
     </header>
     <div class="page">
+        <?php if ($employeeCreds):
+            $credMailto = (string) ($employeeCreds['mailto'] ?? '');
+            $credMailOk = !empty($employeeCreds['mail_ok']);
+            $credMailErr = trim((string) ($employeeCreds['mail_error'] ?? ''));
+            if ($credMailto === '' && !empty($employeeCreds['email']) && !empty($employeeCreds['temp_password'])) {
+                $credSubject = 'Your FarmWise login details';
+                $credBody = "Hello " . ($employeeCreds['name'] ?? '') . ",\n\n"
+                    . "=== YOUR LOGIN DETAILS ===\n"
+                    . "Login page: " . absolute_url('login') . "\n"
+                    . "Email: " . ($employeeCreds['email'] ?? '') . "\n"
+                    . "Username: " . ($employeeCreds['username'] ?? '') . "\n"
+                    . "Temporary password: " . ($employeeCreds['temp_password'] ?? '') . "\n"
+                    . "==========================\n\n"
+                    . "Change this password on first sign-in.\n\n— FarmWise";
+                $credMailto = 'mailto:' . rawurlencode((string) $employeeCreds['email'])
+                    . '?subject=' . rawurlencode($credSubject)
+                    . '&body=' . rawurlencode($credBody);
+            }
+        ?>
+            <div class="flash flash-success creds-flash" role="status">
+                <strong>Employee login details ready — send them now</strong>
+                <p>
+                    <?php if ($credMailOk): ?>
+                        Automatic email was sent to <?= e($employeeCreds['email'] ?? '') ?>.
+                    <?php else: ?>
+                        Automatic Nexus email is blocked on this network<?= $credMailErr !== '' ? ': ' . e($credMailErr) : '' ?>.
+                        Click <strong>Open email app &amp; send details</strong> — Outlook/Gmail opens with the full login message ready (email, username, temporary password).
+                    <?php endif; ?>
+                </p>
+                <ul class="creds-list">
+                    <li><span>Username</span> <code data-copy-text="<?= e($employeeCreds['username'] ?? '') ?>"><?= e($employeeCreds['username'] ?? '') ?></code></li>
+                    <li><span>Email</span> <code data-copy-text="<?= e($employeeCreds['email'] ?? '') ?>"><?= e($employeeCreds['email'] ?? '') ?></code></li>
+                    <li><span>Temporary password</span> <code data-copy-text="<?= e($employeeCreds['temp_password'] ?? '') ?>"><?= e($employeeCreds['temp_password'] ?? '') ?></code></li>
+                </ul>
+                <div class="creds-actions">
+                    <?php if ($credMailto !== ''): ?>
+                        <a class="btn btn-gold" href="<?= e($credMailto) ?>">Open email app &amp; send details</a>
+                    <?php endif; ?>
+                    <button type="button" class="btn btn-ghost" data-copy-text="<?= e("Email: " . ($employeeCreds['email'] ?? '') . "\nUsername: " . ($employeeCreds['username'] ?? '') . "\nTemporary password: " . ($employeeCreds['temp_password'] ?? '') . "\nLogin: " . absolute_url('login')) ?>">Copy all details</button>
+                </div>
+                <p class="muted">This temporary password is shown once. They must change it on first sign-in.</p>
+            </div>
+        <?php endif; ?>
         <?php foreach (flashes() as $type => $message): ?>
             <div class="alert <?= $type === 'success' ? 'ok' : ($type === 'error' ? 'danger' : 'info') ?>" data-flash-toast hidden><?= e(user_safe_message((string) $message, $type === 'success' ? 'Form submitted successfully!' : 'Something went wrong. Please try again later.')) ?></div>
         <?php endforeach; ?>
@@ -154,9 +212,13 @@ require dirname(__DIR__) . '/partials/assistant.php';
 <script>window.IFMS_BASE = <?= json_encode(rtrim(url(''), '/')) ?>;</script>
 <script src="<?= e(url('frontend/config/api.js')) ?>?v=<?= e($assetV) ?>"></script>
 <script src="<?= e(asset('vendor/lucide/lucide.min.js')) ?>?v=<?= e($assetV) ?>"></script>
+<?php if ($needsChart): ?>
 <script src="<?= e(asset('vendor/chart.js/chart.umd.min.js')) ?>?v=<?= e($assetV) ?>"></script>
+<?php endif; ?>
+<?php if ($needsMap): ?>
 <script src="<?= e(asset('vendor/leaflet/leaflet.js')) ?>?v=<?= e($assetV) ?>"></script>
 <script src="<?= e(asset('vendor/leaflet-draw/leaflet.draw.js')) ?>?v=<?= e($assetV) ?>"></script>
+<?php endif; ?>
 <script src="<?= e(asset('js/workflow.js')) ?>?v=<?= e($assetV) ?>"></script>
 <script src="<?= e(asset('js/ui.js')) ?>?v=<?= e($assetV) ?>"></script>
 <script src="<?= e(asset('js/farm-map.js')) ?>?v=<?= e($assetV) ?>"></script>

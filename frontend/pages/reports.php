@@ -41,8 +41,7 @@
             </select>
         <?php endif; ?>
         <input name="status" value="<?= e($filters['status'] ?? '') ?>" placeholder="Status (optional)" aria-label="Status">
-        <button class="btn btn-gold btn-sm" type="submit">Apply Filters</button>
-        <a class="btn btn-ghost btn-sm" href="<?= e(url('reports?type='.$type)) ?>">Reset</a>
+        <button class="btn btn-gold btn-sm" type="submit">Update report</button>
     </form>
     <?php if (!empty($report['chart']['labels'])): ?>
         <div class="report-chart-wrap"><canvas id="reportChart" height="120"></canvas></div>

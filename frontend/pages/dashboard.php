@@ -30,22 +30,66 @@ $dashCards = is_array($focus['cards'] ?? null) ? $focus['cards'] : [];
 $showWeather = array_key_exists('show_weather', $focus) ? (bool) $focus['show_weather'] : fe_can('weather', 'view');
 $showCrops = array_key_exists('show_crops', $focus) ? (bool) $focus['show_crops'] : (fe_can('plantings', 'view') || fe_can('crop_growth', 'view'));
 $showMap = array_key_exists('show_map', $focus) ? (bool) $focus['show_map'] : fe_can('fields', 'view');
+$pendingApprovals = is_array($pendingApprovals ?? null) ? $pendingApprovals : [];
 ?>
 <?php if (!$hasFarm && !fe_is_admin()): ?>
     <section class="panel dash-empty">
         <header><h3>No farm assigned</h3></header>
-        <p>Your account does not yet have a farm workspace, so crops, livestock, tasks and reports have nothing to show.</p>
-        <?php if (in_array($role, ['manager', 'worker', 'agronomist', 'accountant'], true)): ?>
-            <form class="search-form" method="post" action="<?= e(url('join-farm')) ?>" data-validate-form novalidate>
-                <?= fe_csrf_field() ?>
-                <input name="join_code" placeholder="Farm join code" required maxlength="20" data-validate="required" autocomplete="off">
-                <span class="field-msg" data-field-error="join_code" hidden></span>
-                <button class="btn btn-gold" type="submit">Join farm</button>
-            </form>
-        <?php elseif ($role === 'owner'): ?>
-            <p><a class="btn btn-gold" href="<?= e(url('module/farms/create')) ?>">Create your farm</a></p>
+        <?php if ($role === 'owner'): ?>
+            <p><a class="btn btn-gold" href="<?= e(url('module/farms/create')) ?>">Create your farm profile</a></p>
         <?php endif; ?>
     </section>
+<?php endif; ?>
+<?php if (farm_code_feature_enabled() && !empty($farm['join_code']) && ($role === 'owner' || (fe_is_admin() && fe_farm_id()))): ?>
+    <section class="panel">
+        <header><h3>Farm Code</h3></header>
+        <p><strong data-copy-text="<?= e($farm['join_code']) ?>"><?= e($farm['join_code']) ?></strong>
+            <button type="button" class="btn btn-ghost btn-sm" data-copy>Copy</button></p>
+    </section>
+<?php endif; ?>
+
+<?php if ($pendingApprovals && fe_can('users', 'edit')): ?>
+<section class="panel pending-approvals">
+    <header class="panel-tools">
+        <h3>Pending account approvals <span class="badge badge-warn"><?= count($pendingApprovals) ?></span></h3>
+        <a class="panel-link" href="<?= e(url('users')) ?>?status=pending">Manage users →</a>
+    </header>
+    <div class="pending-approvals-list">
+        <?php foreach ($pendingApprovals as $pending):
+            $reqRole = (string) ($pending['requested_role'] ?: $pending['role'] ?: '');
+            $farmId = (int) ($pending['farm_id'] ?? 0);
+            ?>
+            <article class="pending-approval-card">
+                <div class="pending-approval-meta">
+                    <strong><?= e($pending['name'] ?? 'Applicant') ?></strong>
+                    <span>@<?= e(($pending['username'] ?? '') !== '' ? $pending['username'] : '—') ?> · <?= e($pending['email'] ?? '') ?></span>
+                    <span>
+                        Role: <?= e(fe_roles()[$reqRole] ?? ($reqRole ?: '—')) ?>
+                        · Registered <?= e(dater($pending['created_at'] ?? null, 'd M Y H:i')) ?>
+                    </span>
+                </div>
+                <div class="user-actions">
+                    <form method="post" action="<?= e(url('users/pending/' . (int) $pending['id'] . '/approve')) ?>">
+                        <?= fe_csrf_field() ?>
+                        <input type="hidden" name="redirect_to" value="dashboard">
+                        <input type="hidden" name="role" value="<?= e($reqRole) ?>">
+                        <?php if ($farmId > 0): ?>
+                            <input type="hidden" name="farm_ids[]" value="<?= $farmId ?>">
+                            <input type="hidden" name="farm_id" value="<?= $farmId ?>">
+                        <?php endif; ?>
+                        <button type="submit" class="btn btn-approve btn-sm">Approve</button>
+                    </form>
+                    <a class="btn btn-ghost btn-sm" href="<?= e(url('users/pending/' . (int) $pending['id'])) ?>">Review</a>
+                    <form method="post" action="<?= e(url('users/pending/' . (int) $pending['id'] . '/reject')) ?>" data-confirm="Reject registration for <?= e($pending['name'] ?? 'this user') ?>?">
+                        <?= fe_csrf_field() ?>
+                        <input type="hidden" name="redirect_to" value="dashboard">
+                        <button type="submit" class="btn btn-delete btn-sm">Reject</button>
+                    </form>
+                </div>
+            </article>
+        <?php endforeach; ?>
+    </div>
+</section>
 <?php endif; ?>
 
 <div class="dash-top">
@@ -57,9 +101,6 @@ $showMap = array_key_exists('show_map', $focus) ? (bool) $focus['show_map'] : fe
             <h2 class="dash-headline"><span><?= e($focus['line1'] ?? 'Healthy Crops,') ?></span><br><?= e($focus['line2'] ?? 'Greater Harvests') ?></h2>
             <p class="dash-banner-lede"><?= e($focus['lede'] ?? 'Track, manage and grow your farm with smart insights and real-time data.') ?></p>
             <a class="btn dash-banner-btn" href="<?= e($focus['banner_href'] ?? ($showMap ? url('map') : url('dashboard'))) ?>"><?= e($focus['banner_label'] ?? ($showMap ? 'Explore your farm →' : 'Continue →')) ?></a>
-        </div>
-        <div class="dash-banner-photo">
-            <img src="<?= e(asset('img/farm-overview.jpg')) ?>" alt="Farm landscape">
         </div>
     </section>
 
@@ -168,13 +209,16 @@ $showMap = array_key_exists('show_map', $focus) ? (bool) $focus['show_map'] : fe
             <ul class="alert-list">
                 <?php foreach ($alerts as $a):
                     $tone = in_array($a['severity'] ?? '', ['danger', 'critical', 'high'], true) ? 'high' : (in_array($a['severity'] ?? '', ['warning', 'warn', 'medium'], true) ? 'medium' : 'info');
+                    $isRegistration = ($a['category'] ?? '') === 'registration';
+                    $icon = $isRegistration ? 'user-check' : (($a['category'] ?? '') === 'irrigation' ? 'droplets' : (($a['category'] ?? '') === 'disease' || ($a['category'] ?? '') === 'pest' ? 'bug' : 'bell'));
                     ?>
-                    <li>
+                    <li class="<?= $isRegistration ? 'alert-registration' : '' ?>">
                         <a href="<?= e(url($a['link'] ?: 'notifications')) ?>">
-                            <span class="dash-ico sm tone-<?= e($tone) ?>"><i data-lucide="<?= e(($a['category'] ?? '') === 'irrigation' ? 'droplets' : (($a['category'] ?? '') === 'disease' || ($a['category'] ?? '') === 'pest' ? 'bug' : 'bell')) ?>"></i></span>
+                            <span class="dash-ico sm tone-<?= e($tone) ?>"><i data-lucide="<?= e($icon) ?>"></i></span>
                             <div>
                                 <strong><?= e($a['title']) ?></strong>
-                                <span><?= e(relative_time($a['created_at'])) ?></span>
+                                <?php if (!empty($a['message'])): ?><span class="alert-msg"><?= e($a['message']) ?></span><?php endif; ?>
+                                <span><?= e(relative_time($a['created_at'])) ?><?= $isRegistration ? ' · Pending approval' : '' ?></span>
                             </div>
                         </a>
                     </li>
@@ -195,13 +239,11 @@ $showMap = array_key_exists('show_map', $focus) ? (bool) $focus['show_map'] : fe
         <section class="panel quick-actions">
             <header><h3>Quick Actions</h3></header>
             <div class="quick-grid">
-                <?php if (fe_can('plantings', 'create')): ?>
-                <a href="<?= e(url('module/plantings/create')) ?>"><i data-lucide="plus"></i> Add Planting</a>
-                <?php elseif (fe_can('plantings', 'view')): ?>
-                <a href="<?= e(url('module/plantings')) ?>"><i data-lucide="leaf"></i> View Plantings</a>
+                <?php if (fe_can('plantings', 'view')): ?>
+                <a href="<?= e(url('module/plantings')) ?>"><i data-lucide="leaf"></i> Plantings</a>
                 <?php endif; ?>
-                <?php if (fe_can('soil_records', 'create')): ?>
-                <a href="<?= e(url('module/soil_records/create')) ?>"><i data-lucide="layers"></i> Record Soil Data</a>
+                <?php if (fe_can('soil_records', 'view')): ?>
+                <a href="<?= e(url('module/soil_records')) ?>"><i data-lucide="layers"></i> Soil records</a>
                 <?php elseif (fe_can('tasks', 'view')): ?>
                 <a href="<?= e(url('module/tasks')) ?>"><i data-lucide="clipboard-list"></i> My Tasks</a>
                 <?php endif; ?>
@@ -211,8 +253,8 @@ $showMap = array_key_exists('show_map', $focus) ? (bool) $focus['show_map'] : fe
                 <?php if (fe_can('calendar', 'view')): ?>
                 <a href="<?= e(url('calendar')) ?>"><i data-lucide="calendar-days"></i> View Calendar</a>
                 <?php endif; ?>
-                <?php if (fe_can('pest_scouting', 'create')): ?>
-                <a href="<?= e(url('module/pest_scouting/create')) ?>"><i data-lucide="bug"></i> Record Scouting</a>
+                <?php if (fe_can('pest_scouting', 'view')): ?>
+                <a href="<?= e(url('module/pest_scouting')) ?>"><i data-lucide="bug"></i> Scouting</a>
                 <?php endif; ?>
                 <?php if (fe_can('invoices', 'view') && !fe_can('plantings', 'view')): ?>
                 <a href="<?= e(url('module/invoices')) ?>"><i data-lucide="file-text"></i> Invoices</a>

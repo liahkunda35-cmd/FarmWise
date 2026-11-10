@@ -91,7 +91,8 @@ class WorkflowService
     }
 
     /**
-     * Fill a draft payroll payload from attendance. Approved and paid rows are left unchanged.
+     * Fill missing payroll figures from attendance / daily rate and always recompute net pay.
+     * Previously approved or paid rows are left unchanged.
      *
      * @param array<string,mixed> $payload
      * @param array<string,mixed>|null $previous
@@ -99,35 +100,65 @@ class WorkflowService
      */
     public static function applyAttendanceSuggestion(array $payload, ?array $previous = null): array
     {
+        return self::finalizePayrollPayload($payload, $previous);
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @param array<string,mixed>|null $previous
+     * @return array<string,mixed>
+     */
+    public static function finalizePayrollPayload(array $payload, ?array $previous = null): array
+    {
         $locked = $previous && in_array((string) ($previous['status'] ?? ''), ['approved', 'paid'], true);
         if ($locked) {
             return $payload;
         }
-        if ((string) ($payload['status'] ?? 'draft') !== 'draft') {
-            return $payload;
-        }
-        if (($payload['days_worked'] ?? null) !== null && $payload['days_worked'] !== '') {
-            return $payload;
-        }
+
+        $daysBlank = ($payload['days_worked'] ?? null) === null || $payload['days_worked'] === '';
+        $grossBlank = ($payload['gross_pay'] ?? null) === null || $payload['gross_pay'] === '';
+        $noteBlank = trim((string) ($payload['calculation_note'] ?? '')) === '';
+
         $suggestion = self::attendanceSuggestion(
             (int) ($payload['employee_id'] ?? 0),
             (int) ($payload['farm_id'] ?? 0),
             (string) ($payload['period_start'] ?? ''),
             (string) ($payload['period_end'] ?? '')
         );
-        if ($suggestion['has_rows'] && $suggestion['days_worked'] !== null) {
+
+        if ($daysBlank && $suggestion['has_rows'] && $suggestion['days_worked'] !== null) {
             $payload['days_worked'] = $suggestion['days_worked'];
+            $daysBlank = false;
         }
-        if (($payload['gross_pay'] === null || $payload['gross_pay'] === '') && $suggestion['gross_pay'] !== null) {
-            $payload['gross_pay'] = $suggestion['gross_pay'];
+
+        if ($grossBlank) {
+            $days = is_numeric($payload['days_worked'] ?? null) ? (float) $payload['days_worked'] : null;
+            $employee = db()->find('employees', (int) ($payload['employee_id'] ?? 0));
+            $rate = $employee['daily_rate'] ?? null;
+            if ($days !== null && is_numeric($rate) && (float) $rate > 0) {
+                $payload['gross_pay'] = round($days * (float) $rate, 2);
+                $grossBlank = false;
+                if ($noteBlank) {
+                    $payload['calculation_note'] = $suggestion['has_rows']
+                        ? $suggestion['calculation_note']
+                        : ('Gross pay = ' . $days . ' day(s) × daily rate ' . $rate . '. Review before approval.');
+                    $noteBlank = false;
+                }
+            } elseif ($suggestion['gross_pay'] !== null) {
+                $payload['gross_pay'] = $suggestion['gross_pay'];
+                $grossBlank = false;
+            }
         }
+
         $deductions = is_numeric($payload['deductions'] ?? null) ? (float) $payload['deductions'] : 0.0;
-        if (($payload['net_pay'] === null || $payload['net_pay'] === '') && $payload['gross_pay'] !== null && $payload['gross_pay'] !== '') {
+        if (($payload['gross_pay'] ?? null) !== null && $payload['gross_pay'] !== '' && is_numeric($payload['gross_pay'])) {
             $payload['net_pay'] = round((float) $payload['gross_pay'] - $deductions, 2);
         }
-        if (trim((string) ($payload['calculation_note'] ?? '')) === '') {
+
+        if ($noteBlank) {
             $payload['calculation_note'] = $suggestion['calculation_note'];
         }
+
         return $payload;
     }
 

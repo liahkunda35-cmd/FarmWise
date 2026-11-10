@@ -25,6 +25,13 @@ function e($value): string
     return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
 }
 
+/** Temporarily off — set IFMS_FARM_CODE=1 in .env to show Farm Code UI again. */
+function farm_code_feature_enabled(): bool
+{
+    $raw = strtolower(trim((string) (getenv('IFMS_FARM_CODE') ?: ($_ENV['IFMS_FARM_CODE'] ?? '0'))));
+    return in_array($raw, ['1', 'true', 'yes', 'on'], true);
+}
+
 function url($path = ''): string
 {
     $path = ltrim((string) $path, '/');
@@ -200,26 +207,153 @@ function relative_time($value): string
 
 function weather_icon(?string $conditions): string
 {
-    $c = strtolower((string) $conditions);
-    if (str_contains($c, 'thunder')) {
-        return 'cloud-lightning';
+    $kind = weather_icon_kind(null, $conditions);
+    return match ($kind) {
+        'thunder' => 'cloud-lightning',
+        'snow' => 'snowflake',
+        'heavy_rain', 'rain', 'drizzle' => 'cloud-rain',
+        'fog' => 'cloud-fog',
+        'cloudy' => 'cloud',
+        'sunny' => 'sun',
+        'wind' => 'wind',
+        'humidity' => 'droplets',
+        default => 'cloud-sun',
+    };
+}
+
+/** Map OpenWeather / WMO codes and free-text conditions to a stable icon kind. */
+function weather_icon_kind($code = null, ?string $conditions = null): string
+{
+    $c = strtolower(trim((string) $conditions));
+    if ($c === 'humidity') {
+        return 'humidity';
     }
-    if (str_contains($c, 'snow')) {
-        return 'snowflake';
+    if ($c === 'wind') {
+        return 'wind';
     }
-    if (str_contains($c, 'rain') || str_contains($c, 'drizzle') || str_contains($c, 'shower')) {
-        return 'cloud-rain';
+    if ($c === 'rain' || $c === 'rainfall') {
+        return 'rain';
     }
-    if (str_contains($c, 'fog')) {
-        return 'cloud-fog';
+    if (is_numeric($code)) {
+        $id = (int) $code;
+        if ($id >= 200 && $id < 300) {
+            return 'thunder';
+        }
+        if ($id >= 300 && $id < 400) {
+            return 'drizzle';
+        }
+        if ($id >= 500 && $id < 520) {
+            return $id >= 502 ? 'heavy_rain' : 'rain';
+        }
+        if ($id >= 520 && $id < 600) {
+            return 'heavy_rain';
+        }
+        if ($id >= 600 && $id < 700) {
+            return 'snow';
+        }
+        if ($id >= 700 && $id < 800) {
+            return 'fog';
+        }
+        if ($id === 800) {
+            return 'sunny';
+        }
+        if ($id === 801 || $id === 802) {
+            return 'partly';
+        }
+        if ($id === 803 || $id === 804) {
+            return 'cloudy';
+        }
+        // WMO open-meteo style
+        if ($id === 0 || $id === 1) {
+            return 'sunny';
+        }
+        if ($id === 2) {
+            return 'partly';
+        }
+        if ($id === 3) {
+            return 'cloudy';
+        }
+        if ($id === 45 || $id === 48) {
+            return 'fog';
+        }
+        if (in_array($id, [51, 53, 55, 56, 57], true)) {
+            return 'drizzle';
+        }
+        if (in_array($id, [61, 63, 80, 81], true)) {
+            return 'rain';
+        }
+        if (in_array($id, [65, 82], true)) {
+            return 'heavy_rain';
+        }
+        if (in_array($id, [71, 73, 75, 77, 85, 86], true)) {
+            return 'snow';
+        }
+        if (in_array($id, [95, 96, 99], true)) {
+            return 'thunder';
+        }
     }
-    if (str_contains($c, 'cloud') || str_contains($c, 'overcast')) {
-        return 'cloud';
+    if ($c !== '') {
+        if (str_contains($c, 'thunder') || str_contains($c, 'storm')) {
+            return 'thunder';
+        }
+        if (str_contains($c, 'snow') || str_contains($c, 'sleet')) {
+            return 'snow';
+        }
+        if (str_contains($c, 'heavy rain') || str_contains($c, 'torrent')) {
+            return 'heavy_rain';
+        }
+        if (str_contains($c, 'drizzle')) {
+            return 'drizzle';
+        }
+        if (str_contains($c, 'rain') || str_contains($c, 'shower')) {
+            return 'rain';
+        }
+        if (str_contains($c, 'fog') || str_contains($c, 'mist') || str_contains($c, 'haze') || str_contains($c, 'smoke')) {
+            return 'fog';
+        }
+        if (str_contains($c, 'overcast') || str_contains($c, 'broken cloud') || $c === 'cloudy') {
+            return 'cloudy';
+        }
+        if (str_contains($c, 'few cloud') || str_contains($c, 'scatter') || str_contains($c, 'partly')) {
+            return 'partly';
+        }
+        if (str_contains($c, 'clear') || str_contains($c, 'sun')) {
+            return 'sunny';
+        }
+        if (str_contains($c, 'cloud')) {
+            return 'cloudy';
+        }
     }
-    if (str_contains($c, 'clear') || str_contains($c, 'sun')) {
-        return 'sun';
-    }
-    return 'cloud-sun';
+    return 'partly';
+}
+
+/** Inline SVG weather illustration for KPI cards and forecast rows. */
+function weather_icon_svg($code = null, ?string $conditions = null): string
+{
+    $kind = weather_icon_kind($code, $conditions);
+    $sun = '<circle cx="32" cy="28" r="10" fill="#f0c14a"/><g stroke="#f0c14a" stroke-width="2.5" stroke-linecap="round"><path d="M32 10v4M32 42v4M14 28h4M46 28h4M18.5 14.5l2.8 2.8M42.7 38.7l2.8 2.8M18.5 41.5l2.8-2.8M42.7 17.3l2.8-2.8"/></g>';
+    $cloud = '<path d="M22 40h24a10 10 0 0 0 1-20 14 14 0 0 0-27-3 9 9 0 0 0 2 23z" fill="#8fa3b8"/>';
+    $cloudDark = '<path d="M22 40h24a10 10 0 0 0 1-20 14 14 0 0 0-27-3 9 9 0 0 0 2 23z" fill="#5d6f82"/>';
+    $drops = '<g fill="#4a90c8"><path d="M26 44c0 2.2-1.6 3.5-3 3.5s-3-1.3-3-3.5 3-6 3-6 3 3.8 3 6z"/><path d="M36 46c0 2.2-1.6 3.5-3 3.5s-3-1.3-3-3.5 3-6 3-6 3 3.8 3 6z"/><path d="M46 44c0 2.2-1.6 3.5-3 3.5s-3-1.3-3-3.5 3-6 3-6 3 3.8 3 6z"/></g>';
+    $heavyDrops = '<g fill="#356f9c"><path d="M24 42c0 2.4-1.8 3.8-3.2 3.8S17.5 44.4 17.5 42 21 34 21 34s3 5.6 3 8z"/><path d="M34 45c0 2.4-1.8 3.8-3.2 3.8S27.5 47.4 27.5 45 31 37 31 37s3 5.6 3 8z"/><path d="M44 42c0 2.4-1.8 3.8-3.2 3.8S37.5 44.4 37.5 42 41 34 41 34s3 5.6 3 8z"/><path d="M29 48c0 2-1.4 3.2-2.6 3.2S23.8 50 23.8 48 27 42 27 42s2 4.2 2 6z"/><path d="M39 49c0 2-1.4 3.2-2.6 3.2S33.8 51 33.8 49 37 43 37 43s2 4.2 2 6z"/></g>';
+    $bolt = '<path d="M34 28l-6 12h6l-2 12 10-16h-6l4-8z" fill="#f0c14a"/>';
+    $mist = '<g stroke="#9aabbc" stroke-width="2.5" stroke-linecap="round"><path d="M16 36h32M14 42h28M20 48h24"/></g>';
+    $snow = '<g fill="#c5d4e0" stroke="#9eb4c7" stroke-width="1"><circle cx="24" cy="46" r="2.2"/><circle cx="34" cy="50" r="2.2"/><circle cx="44" cy="46" r="2.2"/><circle cx="29" cy="42" r="1.6"/><circle cx="39" cy="44" r="1.6"/></g>';
+    $body = match ($kind) {
+        'sunny' => $sun,
+        'partly' => '<g transform="translate(-4,-4) scale(.78)">' . $sun . '</g>' . $cloud,
+        'cloudy' => $cloud,
+        'drizzle' => $cloud . '<g opacity=".75">' . $drops . '</g>',
+        'rain' => $cloud . $drops,
+        'heavy_rain' => $cloudDark . $heavyDrops,
+        'thunder' => $cloudDark . $bolt . '<g opacity=".7">' . $drops . '</g>',
+        'fog' => $cloud . $mist,
+        'snow' => $cloud . $snow,
+        'humidity' => '<ellipse cx="32" cy="22" rx="10" ry="14" fill="#4a90c8"/><path d="M22 22c0 12 20 12 20 0" fill="#4a90c8"/><circle cx="32" cy="40" r="10" fill="#6aa8d8" opacity=".35"/>',
+        'wind' => '<g fill="none" stroke="#5d6f82" stroke-width="3" stroke-linecap="round"><path d="M10 28h28a8 8 0 1 0-2-15"/><path d="M10 38h34a6 6 0 1 1-1.5 11"/><path d="M10 48h22"/></g>',
+        default => $cloud,
+    };
+    return '<svg class="wx-svg wx-' . e($kind) . '" viewBox="0 0 64 64" width="48" height="48" aria-hidden="true" focusable="false">' . $body . '</svg>';
 }
 
 function record_screen_url(?string $module, $recordId = null, ?string $action = null, ?string $details = null): string
@@ -521,17 +655,66 @@ function farm_directory_constraint(): array
     return ['id IN (' . $placeholders . ')', $ids];
 }
 
-function generate_join_code(): string
+function farm_code_prefix(?string $farmName): string
+{
+    $name = trim((string) $farmName);
+    if ($name === '') {
+        return '';
+    }
+    $clean = preg_replace('/[^A-Za-z0-9\s]/', ' ', $name) ?? '';
+    $words = preg_split('/\s+/', trim($clean)) ?: [];
+    $letters = '';
+    foreach ($words as $word) {
+        if ($word === '') {
+            continue;
+        }
+        $letters .= strtoupper($word[0]);
+        if (strlen($letters) >= 4) {
+            break;
+        }
+    }
+    if (strlen($letters) < 2) {
+        $compact = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $name) ?? '');
+        $letters = substr($compact, 0, 3);
+    }
+    return substr($letters, 0, 4);
+}
+
+/**
+ * Unique farm code. A name prefix is fixed at creation and is not rebuilt when the farm is renamed.
+ */
+function generate_join_code(?string $farmName = null): string
 {
     $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    do {
-        $code = '';
-        for ($i = 0; $i < 8; $i++) {
-            $code .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+    $prefix = farm_code_prefix($farmName);
+    for ($attempt = 0; $attempt < 30; $attempt++) {
+        $suffix = '';
+        $length = $prefix !== '' ? 6 : 8;
+        for ($i = 0; $i < $length; $i++) {
+            $suffix .= $alphabet[random_int(0, strlen($alphabet) - 1)];
         }
-        $exists = db()->first('SELECT id FROM farms WHERE join_code = ?', [$code]);
-    } while ($exists);
-    return $code;
+        $code = $prefix !== '' ? ($prefix . '-' . $suffix) : $suffix;
+        $exists = db()->first('SELECT id FROM farms WHERE upper(join_code) = ?', [$code]);
+        if (!$exists) {
+            return $code;
+        }
+    }
+    throw new RuntimeException('Could not generate a unique farm code.');
+}
+
+function normalize_farm_code(string $code): string
+{
+    return strtoupper(trim($code));
+}
+
+function find_farm_by_code(string $code): ?array
+{
+    $code = normalize_farm_code($code);
+    if ($code === '' || !preg_match('/^[A-Z0-9-]{4,20}$/', $code)) {
+        return null;
+    }
+    $farm = db()->first('SELECT * FROM farms WHERE upper(join_code) = ?', [$code]);
+    return $farm ?: null;
 }
 
 function safe_return_path(?string $path = null): string
@@ -738,6 +921,30 @@ function is_active_path($prefix): bool
 function table_exists(string $table): bool
 {
     return in_array($table, db()->tables(), true);
+}
+
+function session_memo_get(string $key)
+{
+    $row = $_SESSION['_memo'][$key] ?? null;
+    if (!is_array($row) || (int) ($row['exp'] ?? 0) < time()) {
+        return null;
+    }
+    return $row['v'];
+}
+
+function session_memo_set(string $key, $value, int $ttl): void
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        return;
+    }
+    $_SESSION['_memo'][$key] = ['exp' => time() + max(1, $ttl), 'v' => $value];
+}
+
+function session_memo_flush(): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        unset($_SESSION['_memo']);
+    }
 }
 
 function option_label($row, array $fields = ['name', 'title', 'code']): string

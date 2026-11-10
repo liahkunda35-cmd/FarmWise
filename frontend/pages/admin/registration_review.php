@@ -26,10 +26,15 @@ $status = $pendingUser['status'] ?? '';
         </dl>
 
         <?php if ($status === 'pending'): ?>
+            <?php $alreadyChosePassword = (int) ($pendingUser['must_change_password'] ?? 1) === 0; ?>
             <form method="post" action="<?= e(url('users/pending/' . $pendingUser['id'] . '/approve')) ?>" class="stack-form" style="margin-top:1.25rem">
                 <?= fe_csrf_field() ?>
-                <h4>Approve &amp; assign</h4>
+                <h4><?= fe_is_admin() ? 'Approve &amp; assign' : 'Approve this request' ?></h4>
+                <?php if (!fe_is_admin()): ?>
+                    <input type="hidden" name="role" value="<?= e((string) ($pendingUser['requested_role'] ?? $pendingUser['role'] ?? '')) ?>">
+                <?php endif; ?>
                 <div class="form-grid">
+                    <?php if (fe_is_admin()): ?>
                     <label>Final role
                         <select name="role" required>
                             <?php foreach ($roles as $k => $l): ?>
@@ -43,17 +48,18 @@ $status = $pendingUser['status'] ?? '';
                                 <option value="<?= e($fid) ?>" <?= in_array((int)$fid, array_map('intval', $assigned), true) ? 'selected' : '' ?>><?= e($fname) ?></option>
                             <?php endforeach; ?>
                         </select>
-                        <small class="muted">Hold Ctrl/Cmd to select multiple farms.</small>
+                        <small class="muted">A farm owner can be approved with no farm selected. They create the farm after signing in.</small>
                     </label>
                     <label class="wide">
                         <input type="checkbox" name="create_owner_farm" value="1">
                         Create a new farm workspace if role is Farm Owner and no farm is selected
                     </label>
+                    <?php endif; ?>
                     <label class="wide">Notes (optional)
                         <textarea name="notes" rows="2" maxlength="1000"></textarea>
                     </label>
                 </div>
-                <button class="btn btn-gold" type="submit">Approve &amp; send activation email</button>
+                <button class="btn btn-gold" type="submit"><?= $alreadyChosePassword ? 'Approve account' : 'Approve &amp; send activation email' ?></button>
             </form>
 
             <form method="post" action="<?= e(url('users/pending/' . $pendingUser['id'] . '/reject')) ?>" class="stack-form" style="margin-top:1.5rem" data-confirm="Reject this registration request?">
@@ -65,7 +71,21 @@ $status = $pendingUser['status'] ?? '';
                 <button class="btn btn-ghost" type="submit">Reject request</button>
             </form>
         <?php elseif ($status === 'approved'): ?>
-            <p class="muted">Approved — waiting for the applicant to open their activation email and set a password.</p>
+            <p class="muted">Approved — waiting for the applicant to open their activation email and set a password. Passwords are never emailed.</p>
+            <?php if (($pendingUser['role'] ?? '') === 'owner' || ($pendingUser['requested_role'] ?? '') === 'owner'): ?>
+            <form method="post" action="<?= e(url('users/pending/' . $pendingUser['id'] . '/resend-email')) ?>" style="margin-top:1rem">
+                <?= fe_csrf_field() ?>
+                <button class="btn btn-gold" type="submit">Resend approval email</button>
+            </form>
+            <?php endif; ?>
+        <?php elseif ($status === 'active'): ?>
+            <p class="muted">This account is active. The owner signs in with the email/username and the password they created at registration. FarmWise never emails passwords.</p>
+            <?php if (($pendingUser['role'] ?? '') === 'owner'): ?>
+            <form method="post" action="<?= e(url('users/pending/' . $pendingUser['id'] . '/resend-email')) ?>" style="margin-top:1rem">
+                <?= fe_csrf_field() ?>
+                <button class="btn btn-gold" type="submit">Resend approval email</button>
+            </form>
+            <?php endif; ?>
         <?php else: ?>
             <p class="muted">Rejection reason: <?= e($pendingUser['rejection_reason'] ?: '—') ?></p>
         <?php endif; ?>

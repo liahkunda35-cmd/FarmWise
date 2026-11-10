@@ -3,13 +3,16 @@
   "private": true,
   "description": "FarmWise Farm Management System",
   "scripts": {
-    "start": "php -S 127.0.0.1:8081 router.php",
-    "dev": "php -S 127.0.0.1:8081 router.php"
+    "proxy": "node scripts/neon-local-proxy.js",
+    "dev": "node scripts/dev.js",
+    "start": "node scripts/dev.js"
   },
   "dependencies": {
     "@google/genai": "^2.31.0",
     "@neon/config": "^1.9.4",
-    "@neon/env": "^1.6.5"
+    "@neon/env": "^1.6.5",
+    "pg": "^8.16.3",
+    "pg-gateway": "^0.3.0-beta.4"
   },
   "devDependencies": {
     "playwright": "^1.49.1"

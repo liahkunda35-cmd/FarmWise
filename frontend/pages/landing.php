@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <?= brand_head() ?>
     <link rel="stylesheet" href="<?= e(asset('vendor/fonts/fonts.css')) ?>">
-    <link rel="stylesheet" href="<?= e(asset('css/app.css')) ?>?v=p19">
+    <link rel="stylesheet" href="<?= e(asset('css/app.css')) ?>?v=p22">
     <link rel="preload" as="image" type="image/jpeg" href="<?= e(asset('img/farmwise-hero-laptop.jpg')) ?>?v=p17" fetchpriority="high">
     <link rel="preload" as="image" type="image/jpeg" href="<?= e(asset('img/livestock-farm-hero.jpg')) ?>">
     <script>document.documentElement.classList.add('js-motion');</script>
@@ -22,7 +22,7 @@
         <a href="#benefits">Benefits</a>
         <a href="#how-it-works">How it works</a>
         <a href="<?= e(url('login')) ?>">Sign in</a>
-        <a class="btn btn-gold btn-sm" href="<?= e(url('register')) ?>">Get started</a>
+        <a class="btn btn-gold btn-sm" href="<?= e(url('login')) ?>">Sign in</a>
     </nav>
 </header>
 
@@ -88,7 +88,7 @@
             </h1>
             <p class="lede hero-lede is-waiting" data-hero-fade><?= e($lede) ?></p>
             <div class="hero-actions hero-enter hero-enter-up is-waiting" style="--enter-delay:.05s" data-hero-fade>
-                <a class="btn btn-hero-primary" href="<?= e(url('register')) ?>">Get started <span aria-hidden="true">→</span></a>
+                <a class="btn btn-hero-primary" href="<?= e(url('login')) ?>">Sign in <span aria-hidden="true">→</span></a>
                 <a class="btn btn-hero-secondary" href="<?= e(url('login')) ?>">Sign in</a>
             </div>
             <ul class="hero-highlights hero-enter hero-enter-up is-waiting" style="--enter-delay:.12s" data-hero-fade>
@@ -123,13 +123,13 @@
 
 <section class="section landing-section cream" id="about">
     <div class="wrap landing-about">
-        <div class="landing-about-copy" data-reveal="left">
-            <p class="eyebrow">About FarmWise</p>
-            <h2>A calmer way to organise the farm.</h2>
-            <p>FarmWise is a farm management platform that helps you keep day-to-day farming information in one place. Whether you manage fields, livestock, labour or finances, you can sign in, set up your farm workspace, and track what matters without juggling spreadsheets and notebooks.</p>
-            <p>It is built for commercial estates and family farms alike — so owners, managers and workers can share a clear picture of what is happening on the land.</p>
+        <div class="landing-about-copy">
+            <p class="eyebrow" data-reveal="up">About FarmWise</p>
+            <h2 data-reveal="up" style="--reveal-delay: 90ms">A calmer way to organise the farm.</h2>
+            <p data-reveal="up" style="--reveal-delay: 170ms">FarmWise is a farm management platform that helps you keep day-to-day farming information in one place. Whether you manage fields, livestock, labour or finances, you can sign in, set up your farm workspace, and track what matters without juggling spreadsheets and notebooks.</p>
+            <p data-reveal="up" style="--reveal-delay: 250ms">It is built for commercial estates and family farms alike — so owners, managers and workers can share a clear picture of what is happening on the land.</p>
         </div>
-        <figure class="landing-about-media" data-reveal="right">
+        <figure class="landing-about-media" data-reveal="up" style="--reveal-delay: 120ms">
             <img
                 src="<?= e(asset('img/livestock-farm-hero.jpg')) ?>"
                 srcset="<?= e(asset('img/livestock-farm-hero.jpg')) ?> 2048w"
@@ -147,7 +147,7 @@
 <section class="section landing-section landing-section-alt" id="benefits">
     <div class="wrap">
         <p class="eyebrow" data-reveal="up">Benefits</p>
-        <h2 data-reveal="up">Practical advantages for everyday farming.</h2>
+        <h2 data-reveal="up" style="--reveal-delay: 90ms">Practical advantages for everyday farming.</h2>
         <div class="feature-grid landing-benefits" data-reveal-stagger>
             <article class="benefit-card benefit-card-green">
                 <span class="benefit-card-icon" aria-hidden="true">
@@ -178,7 +178,7 @@
     <div class="wrap landing-how">
         <div class="landing-how-copy">
             <p class="eyebrow" data-reveal="up">How it works</p>
-            <h2 data-reveal="right">Three simple steps to get going.</h2>
+            <h2 data-reveal="up" style="--reveal-delay: 90ms">Three simple steps to get going.</h2>
             <ol class="landing-steps" data-reveal-stagger>
                 <li>
                     <span class="landing-step-num">1</span>
@@ -203,7 +203,7 @@
                 </li>
             </ol>
         </div>
-        <figure class="landing-how-media" data-reveal="left">
+        <figure class="landing-how-media" data-reveal="up" style="--reveal-delay: 140ms">
             <img
                 src="<?= e(asset('img/crops-farm-hero.jpg')) ?>"
                 srcset="<?= e(asset('img/crops-farm-hero.jpg')) ?> 2400w"
@@ -224,8 +224,7 @@
         <h2>Start organising your farm with FarmWise.</h2>
         <p>Create a workspace in minutes and bring your farm operations into one clear place.</p>
         <div class="hero-actions">
-            <a class="btn btn-gold" href="<?= e(url('register')) ?>">Get started</a>
-            <a class="btn btn-ghost landing-cta-ghost" href="<?= e(url('login')) ?>">Sign in</a>
+            <a class="btn btn-gold" href="<?= e(url('login')) ?>">Sign in</a>
         </div>
     </div>
 </section>
@@ -249,7 +248,6 @@
         <div class="landing-footer-col" data-reveal="up">
             <h3>Account</h3>
             <a href="<?= e(url('login')) ?>">Sign in</a>
-            <a href="<?= e(url('register')) ?>">Get started</a>
         </div>
         <div class="landing-footer-col" data-reveal="up">
             <h3>Support</h3>
@@ -268,7 +266,7 @@ fe_component('partials/assistant');
 ?>
 <script>window.IFMS_BASE = <?= json_encode(rtrim(url(''), '/')) ?>;</script>
 <script src="<?= e(url('frontend/config/api.js')) ?>?v=p1"></script>
-<script src="<?= e(asset('js/app.js')) ?>?v=p15"></script>
+<script src="<?= e(asset('js/app.js')) ?>?v=p16"></script>
 <script src="<?= e(asset('js/assistant.js')) ?>?v=p12"></script>
 </body>
 </html>

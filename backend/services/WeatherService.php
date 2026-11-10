@@ -32,40 +32,61 @@ class WeatherService
             return self::withMeta($cached['payload'] ?? null, false, 'missing_location', 'Find your farm on the map (Farms → edit → Find on map) so weather can load for your area.');
         }
 
-        if (self::apiKey() === '') {
-            return self::withMeta($cached['payload'] ?? null, false, 'missing_key', 'Weather is not configured. Add OPENWEATHER_API_KEY on the server.');
-        }
-
         $lat = (float) $farm['latitude'];
         $lon = (float) $farm['longitude'];
-        if ($lat < -90 || $lat > 90 || $lon < -180 || $lon > 180) {
-            return self::withMeta($cached['payload'] ?? null, false, 'invalid_location', 'The saved map pin looks wrong. Open the farm and place the pin again.');
+        $result = self::fetchAt($lat, $lon, [
+            'label' => (string) (($farm['location_label'] ?? '') ?: ($farm['location'] ?? '') ?: ($farm['name'] ?? '')),
+            'precision' => (string) ($farm['location_precision'] ?? 'approximate'),
+        ]);
+        if (!empty($result['current']) && empty($result['meta']['error'])) {
+            self::persistLog($farm, $result, $cached['row'] ?? null);
+        } elseif ($cached['payload'] ?? null) {
+            return self::withMeta($cached['payload'], false, (string) ($result['meta']['error'] ?? 'api_error'), (string) ($result['meta']['message'] ?? 'Live weather unavailable.'));
         }
-        $precision = (string) ($farm['location_precision'] ?? 'approximate');
+        return $result;
+    }
+
+    /** Live weather for any lat/lon (farm optional). */
+    public static function fetchAt(float $lat, float $lon, array $opts = []): array
+    {
+        if ((string) (getenv('IFMS_TEST_CAPTURE') ?: '') === '1') {
+            return self::withMeta(null, false, 'test_capture', 'Weather network calls are disabled during automated tests.');
+        }
+        if ($lat < -90 || $lat > 90 || $lon < -180 || $lon > 180) {
+            return self::withMeta(null, false, 'invalid_location', 'Those coordinates are invalid.');
+        }
+        if (self::apiKey() === '') {
+            return self::withMeta(null, false, 'missing_key', 'Weather is not configured. Add OPENWEATHER_API_KEY on the server.');
+        }
 
         $currentRaw = self::httpGetJson(self::endpointUrl('weather', $lat, $lon));
         $forecastRaw = self::httpGetJson(self::endpointUrl('forecast', $lat, $lon));
-
         if ($currentRaw === null && $forecastRaw === null) {
-            return self::withMeta($cached['payload'] ?? null, false, 'api_error', 'Live weather could not be reached. Showing the last saved reading if available.');
+            return self::withMeta(null, false, 'api_error', 'Live weather could not be reached. Try again shortly.');
         }
 
         $normalized = self::normalizeOpenWeather($currentRaw, $forecastRaw, $lat, $lon);
         if (empty($normalized['current'])) {
-            return self::withMeta($cached['payload'] ?? null, false, 'api_error', 'Weather data was incomplete for this location. Try again shortly.');
+            return self::withMeta(null, false, 'api_error', 'Weather data was incomplete for this location. Try again shortly.');
         }
 
-        self::persistLog($farm, $normalized, $cached['row'] ?? null);
+        $label = trim((string) ($opts['label'] ?? ''));
+        if ($label === '' && is_array($currentRaw)) {
+            $label = trim((string) (($currentRaw['name'] ?? '') . (!empty($currentRaw['sys']['country']) ? ', ' . $currentRaw['sys']['country'] : '')));
+        }
+        $precision = (string) ($opts['precision'] ?? 'confirmed');
         $msg = null;
-        if ($precision === 'approximate') {
-            $place = trim((string) ($farm['location_label'] ?? $farm['town'] ?? $farm['location'] ?? 'your town'));
-            $msg = 'Weather is for the town/village area (' . $place . '), not an exact farm pin. Drag the pin on the farm map for a closer match.';
+        if ($precision === 'approximate' && $label !== '') {
+            $msg = 'Weather for ' . $label . '.';
+        } elseif ($label !== '') {
+            $msg = null;
         }
         $normalized['meta'] = [
             'ok' => true,
             'error' => null,
             'message' => $msg,
             'location_precision' => $precision,
+            'location_label' => $label,
             'source' => 'openweather',
             'cached' => false,
             'updated_at' => date('c'),
@@ -83,12 +104,12 @@ class WeatherService
         }
         $maxTemp = !empty($daily['temperature_2m_max']) ? max(array_slice($daily['temperature_2m_max'], 0, 3)) : 0;
         if ($rain3 < 2) {
-            $tips[] = ['Irrigation', 'Little rainfall is forecast over the next 3 days. Prioritise drip irrigation on active plantings and check soil moisture before pumping.'];
+            $tips[] = ['Rainfall', 'Little rainfall is forecast over the next 3 days. Watch soil moisture on active plantings.'];
         } else {
-            $tips[] = ['Irrigation', 'Rain is expected. Delay non-essential irrigation to reduce water cost and avoid waterlogging.'];
+            $tips[] = ['Rainfall', 'Rain is expected. Plan fieldwork around wet periods and avoid waterlogging low areas.'];
         }
         if ($maxTemp >= 32) {
-            $tips[] = ['Crops', 'High temperatures are forecast. Irrigate early morning, watch for heat stress, and avoid midday spraying.'];
+            $tips[] = ['Crops', 'High temperatures are forecast. Watch for heat stress and avoid midday spraying.'];
         } else {
             $tips[] = ['Crops', 'Temperatures are moderate. Suitable window for planting, scouting and foliar applications.'];
         }
@@ -358,8 +379,8 @@ class WeatherService
             $ch = curl_init($url);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => 10,
-                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 4,
+                CURLOPT_CONNECTTIMEOUT => 3,
                 CURLOPT_FOLLOWLOCATION => true,
                 CURLOPT_HTTPHEADER => ['Accept: application/json'],
             ]);
@@ -378,7 +399,7 @@ class WeatherService
         } else {
             $ctx = stream_context_create([
                 'http' => [
-                    'timeout' => 10,
+                    'timeout' => 4,
                     'header' => "Accept: application/json\r\n",
                     'ignore_errors' => true,
                 ],

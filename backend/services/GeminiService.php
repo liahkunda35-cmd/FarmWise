@@ -10,11 +10,16 @@ class GeminiService
     public const MAX_HISTORY_TURNS = 16;
     public const RATE_LIMIT = 20; // messages per window
     public const RATE_WINDOW = 600; // seconds
-    public const REQUEST_TIMEOUT = 18; // seconds per model attempt (keep under FE 55s budget)
-    public const MAX_ATTEMPTS = 2;
+    public const SPEECH_MODEL = 'gemini-3.8-flash-tts';
+    public const SPEECH_MAX_CHARS = 700;
+    public const SPEECH_RATE_LIMIT = 12; // spoken replies per window
+    /** @var list<string> */
+    public const SPEECH_LANGUAGES = ['en', 'bem', 'nya'];
+    public const REQUEST_TIMEOUT = 12; // seconds per model attempt (keep under FE budget; avoid blocking PHP)
+    public const MAX_ATTEMPTS = 1;
 
     /** @var list<string> */
-    public const LANGUAGES = ['en', 'bem', 'nya', 'toi', 'loz', 'lue', 'kqn'];
+    public const LANGUAGES = ['en', 'bem', 'nya', 'toi'];
 
     /** @var array<string, string> */
     public const LANGUAGE_LABELS = [
@@ -22,9 +27,6 @@ class GeminiService
         'bem' => 'Bemba',
         'nya' => 'Nyanja (Chichewa)',
         'toi' => 'Tonga',
-        'loz' => 'Lozi',
-        'lue' => 'Luvale',
-        'kqn' => 'Kaonde',
     ];
 
     /** @var array<string, string> */
@@ -33,9 +35,6 @@ class GeminiService
         'bem' => 'Bemba (iciBemba)',
         'nya' => 'Nyanja / Chichewa',
         'toi' => 'Tonga (chiTonga)',
-        'loz' => 'Lozi (Silozi)',
-        'lue' => 'Luvale',
-        'kqn' => 'Kaonde (kiiKaonde)',
     ];
 
     public static function apiKey(): string
@@ -61,17 +60,12 @@ class GeminiService
     public static function modelCandidates(): array
     {
         $primary = self::model();
-        // Try a fast lite model first when the configured model is a heavy flash id known to 503.
+        // Prefer a short list of fast models so chat does not burn the whole FE timeout.
         $preferLiteFirst = (bool) preg_match('/gemini-3\.[6-9]-flash$/i', $primary)
             || strcasecmp($primary, 'gemini-flash-latest') === 0;
         $fallbacks = [
             'gemini-flash-lite-latest',
             'gemini-3.1-flash-lite',
-            'gemini-3.5-flash-lite',
-            'gemini-3.8-flash',
-            'gemini-3.7-flash',
-            'gemini-3.6-flash',
-            'gemini-3.5-flash',
             'gemini-flash-latest',
         ];
         $ordered = $preferLiteFirst
@@ -84,6 +78,9 @@ class GeminiService
                 continue;
             }
             $out[] = $m;
+            if (count($out) >= 3) {
+                break;
+            }
         }
         return $out;
     }
@@ -104,9 +101,6 @@ class GeminiService
             'chichewa' => 'nya',
             'chewa' => 'nya',
             'tonga' => 'toi',
-            'lozi' => 'loz',
-            'luvale' => 'lue',
-            'kaonde' => 'kqn',
         ];
         if (isset($aliases[$code])) {
             $code = $aliases[$code];
@@ -200,66 +194,6 @@ class GeminiService
                 'redirect' => 'Ndime FarmWise assistant wa bulimi. Ndingakugwasya aatala a zilimo, zifuyo, munda aanyika. Unoyanda kuziwa nzi aatala a munda wako sunu?',
                 'lang_label' => 'Mulaka',
                 'clear' => 'Nkani mpya',
-                'close' => 'Jala',
-            ],
-            'loz' => [
-                'subtitle_auth' => 'Mulusepi wa bulimi',
-                'subtitle_public' => 'Buza ka FarmWise',
-                'placeholder_auth' => 'Buza ka sitimu sa hao…',
-                'placeholder_public' => 'Buza ka FarmWise…',
-                'send' => 'Lumela',
-                'thinking' => 'Ni nahana…',
-                'retry' => 'Lika hape',
-                'error' => 'Kuna phoso. Lika hape.',
-                'timeout' => 'Ku nzi nako ye telele. Lika hape.',
-                'network' => 'Kuna phoso ya intaneti. Lika hape.',
-                'greeting_auth' => 'Lumela {part}, {name}! Ni ka ku tusa cwañi ka bulimi kacenu?',
-                'greeting_auth_noname' => 'Lumela {part}! Ni ka ku tusa cwañi ka bulimi kacenu?',
-                'greeting_public' => 'Lumela {part}! Mu amuhezwi ku FarmWise. Ni ka ku tusa cwañi?',
-                'welcome_back' => 'Mu amuhezwi hape — buza ka bulimi.',
-                'redirect' => 'Ni FarmWise assistant wa bulimi. Ni ka tusa ka limo, lifuo, sitimu ni pula. U bata ku ziba ñi ka sitimu sa hao kacenu?',
-                'lang_label' => 'Puo',
-                'clear' => 'Puisano ye nca',
-                'close' => 'Kwala',
-            ],
-            'lue' => [
-                'subtitle_auth' => 'Mukwashi wa kulima',
-                'subtitle_public' => 'Pusha hali FarmWise',
-                'placeholder_auth' => 'Pusha hali limbo lyenu…',
-                'placeholder_public' => 'Pusha hali FarmWise…',
-                'send' => 'Tuma',
-                'thinking' => 'Nguli kunguluka…',
-                'retry' => 'Eza nakambi',
-                'error' => 'Kuli cihana. Eza nakambi.',
-                'timeout' => 'Kwali kuheka. Eza nakambi.',
-                'network' => 'Kuli cihana ca intaneti. Eza nakambi.',
-                'greeting_auth' => 'Mwane {part}, {name}! Ngachi nikukwasha hali kulima lehona?',
-                'greeting_auth_noname' => 'Mwane {part}! Ngachi nikukwasha hali kulima lehona?',
-                'greeting_public' => 'Mwane {part}! Twakuyanjila ku FarmWise. Ngachi nikukwasha?',
-                'welcome_back' => 'Twakuyanjila nakambi — pusha hali kulima.',
-                'redirect' => 'Ami FarmWise assistant wa kulima. Nikwasha hali limo, vipuka, limbo na mvula. Munafwile kwishiba cinyi hali limbo lyenu lehona?',
-                'lang_label' => 'Chilimi',
-                'clear' => 'Lyashi lipya',
-                'close' => 'Jala',
-            ],
-            'kqn' => [
-                'subtitle_auth' => 'Mukwashi wa bulimi',
-                'subtitle_public' => 'Buzha kya FarmWise',
-                'placeholder_auth' => 'Buzha kya kimye kyenu…',
-                'placeholder_public' => 'Buzha kya FarmWise…',
-                'send' => 'Tuma',
-                'thinking' => 'Ndi languluka…',
-                'retry' => 'Eza byonka',
-                'error' => 'Kuji chisongo. Eza byonka.',
-                'timeout' => 'Kwajinga bya kala. Eza byonka.',
-                'network' => 'Kuji chisongo cha intaneti. Eza byonka.',
-                'greeting_auth' => 'Muji byepi {part}, {name}! Nkakumukwasha byepi pa bulimi lelo?',
-                'greeting_auth_noname' => 'Muji byepi {part}! Nkakumukwasha byepi pa bulimi lelo?',
-                'greeting_public' => 'Muji byepi {part}! Twamukemena ku FarmWise. Nkakumukwasha byepi?',
-                'welcome_back' => 'Twamukemena byonka — buzha pa bulimi.',
-                'redirect' => 'Ami FarmWise assistant wa bulimi. Nakwasha pa byakuteeka, bipuka, kimye ne mvula. Munafwile kwishiba kika pa kimye kyenu lelo?',
-                'lang_label' => 'Lulimi',
-                'clear' => 'Lyashi lipya',
                 'close' => 'Jala',
             ],
         ];
@@ -361,10 +295,10 @@ TXT;
         $lang = self::normalizeLanguage($lang);
         $name = self::LANGUAGE_NAMES_FOR_PROMPT[$lang];
         if ($lang === 'en') {
-            return "Response language:\n- Reply in clear, simple English unless the user clearly writes in another supported language; then you may reply in that language for that turn while remembering the user's preferred language is English.";
+            return "Response language:\n- Supported reply languages are only English, Bemba, Nyanja, and Tonga.\n- Reply in clear, simple English unless the user clearly writes in Bemba, Nyanja, or Tonga; then you may reply in that language for that turn while remembering the user's preferred language is English.";
         }
 
-        return "Response language:\n- The user's selected interface language is {$name}.\n- Write your full answers in {$name} using simple, farmer-friendly wording.\n- Keep farming-only restrictions active in {$name}.\n- If the user writes in a different supported language for one message, understand it and still prefer {$name} for the reply unless they ask to switch.\n- Do not pretend fluency is perfect; if you cannot produce a reliable {$name} answer, say so briefly and offer English or another listed language.";
+        return "Response language:\n- Supported reply languages are only English, Bemba, Nyanja, and Tonga.\n- The user's selected interface language is {$name}.\n- Write your full answers in {$name} using simple, farmer-friendly wording.\n- Keep farming-only restrictions active in {$name}.\n- If the user writes in a different supported language for one message, understand it and still prefer {$name} for the reply unless they ask to switch.\n- Do not pretend fluency is perfect; if you cannot produce a reliable {$name} answer, say so briefly and offer English, Bemba, Nyanja, or Tonga.";
     }
 
     /**
@@ -454,6 +388,140 @@ TXT;
         $bucket['count'] = (int) $bucket['count'] + 1;
         $_SESSION['_ai_rate'] = $bucket;
         return null;
+    }
+
+    /** Separate from chat so listening does not use up the writing allowance. */
+    public static function checkSpeechRateLimit(): ?string
+    {
+        $now = time();
+        $bucket = $_SESSION['_ai_speech_rate'] ?? ['start' => $now, 'count' => 0];
+        if (($now - (int) $bucket['start']) > self::RATE_WINDOW) {
+            $bucket = ['start' => $now, 'count' => 0];
+        }
+        if ((int) $bucket['count'] >= self::SPEECH_RATE_LIMIT) {
+            $_SESSION['_ai_speech_rate'] = $bucket;
+            return 'Too many spoken replies. Please wait a few minutes and try again.';
+        }
+        $bucket['count'] = (int) $bucket['count'] + 1;
+        $_SESSION['_ai_speech_rate'] = $bucket;
+        return null;
+    }
+
+    /**
+     * Bound a finished reply before it is read aloud.
+     * @return array{text:string,truncated:bool}
+     */
+    public static function speechTranscript(string $text): array
+    {
+        $text = trim(preg_replace("/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/u", '', $text) ?? '');
+        $text = trim(preg_replace("/[ \t]+/u", ' ', $text) ?? '');
+        $text = trim(preg_replace("/\n{3,}/u", "\n\n", $text) ?? '');
+        if ($text === '') {
+            return ['text' => '', 'truncated' => false];
+        }
+        if (mb_strlen($text) <= self::SPEECH_MAX_CHARS) {
+            return ['text' => $text, 'truncated' => false];
+        }
+        $slice = mb_substr($text, 0, self::SPEECH_MAX_CHARS);
+        $cut = false;
+        foreach (['.', '!', '?'] as $mark) {
+            $pos = mb_strrpos($slice, $mark);
+            if ($pos !== false && ($cut === false || $pos > $cut)) {
+                $cut = $pos;
+            }
+        }
+        if ($cut !== false && $cut >= 160) {
+            $slice = mb_substr($slice, 0, $cut + 1);
+        }
+        return ['text' => trim($slice), 'truncated' => true];
+    }
+
+    /**
+     * Read a completed reply aloud. This does not answer the farming question.
+     * @return array{ok:bool,audio?:string,mime?:string,truncated?:bool,error?:string}
+     */
+    public static function speak(string $text, string $lang): array
+    {
+        $lang = self::normalizeLanguage($lang);
+        if (!in_array($lang, self::SPEECH_LANGUAGES, true)) {
+            return ['ok' => false, 'error' => 'Spoken replies are not available for this language.'];
+        }
+        if (!self::configured()) {
+            return ['ok' => false, 'error' => 'FarmWise AI is not configured. Set GEMINI_API_KEY on the server, then restart the app.'];
+        }
+        $prepared = self::speechTranscript($text);
+        if ($prepared['text'] === '') {
+            return ['ok' => false, 'error' => 'There is no reply to read aloud.'];
+        }
+
+        $body = [
+            'contents' => [[
+                'role' => 'user',
+                'parts' => [['text' => $prepared['text']]],
+            ]],
+            'generationConfig' => [
+                'responseModalities' => ['AUDIO'],
+                'speechConfig' => [
+                    'voiceConfig' => [
+                        'prebuiltVoiceConfig' => ['voiceName' => 'Kore'],
+                    ],
+                ],
+            ],
+        ];
+        $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+            . rawurlencode(self::SPEECH_MODEL)
+            . ':generateContent';
+        $json = json_encode($body, JSON_UNESCAPED_UNICODE);
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'x-goog-api-key: ' . self::apiKey(),
+            ],
+            CURLOPT_POSTFIELDS => $json,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 20,
+            CURLOPT_CONNECTTIMEOUT => 6,
+        ]);
+        if (class_exists('SslCa')) {
+            SslCa::applyCurl($ch);
+        }
+        $response = curl_exec($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch) ?: '';
+        curl_close($ch);
+        if ($response === false || $response === null) {
+            self::logSafe('assistant_speech', 'network ' . $err);
+            return ['ok' => false, 'error' => 'Could not reach the speech service. The written reply is still here.'];
+        }
+        $data = json_decode((string) $response, true);
+        if ($httpCode >= 400 || !is_array($data)) {
+            $apiMsg = is_array($data) ? (string) ($data['error']['message'] ?? '') : '';
+            self::logSafe('assistant_speech', 'http ' . $httpCode . ' ' . $apiMsg);
+            return ['ok' => false, 'error' => 'The reply could not be read aloud. The written answer is still here.'];
+        }
+        $audio = '';
+        $mime = '';
+        foreach ($data['candidates'][0]['content']['parts'] ?? [] as $part) {
+            if (!empty($part['inlineData']['data']) && is_string($part['inlineData']['data'])) {
+                $audio = $part['inlineData']['data'];
+                $mime = (string) ($part['inlineData']['mimeType'] ?? '');
+                break;
+            }
+        }
+        $bin = $audio !== '' ? base64_decode($audio, true) : false;
+        $wav = is_string($bin) && str_starts_with($bin, 'RIFF') && substr($bin, 8, 4) === 'WAVE';
+        if (!$wav || !str_contains(strtolower($mime), 'wav')) {
+            self::logSafe('assistant_speech', 'no wav mime=' . $mime);
+            return ['ok' => false, 'error' => 'The speech service did not return playable audio.'];
+        }
+        return [
+            'ok' => true,
+            'audio' => $audio,
+            'mime' => 'audio/wav',
+            'truncated' => $prepared['truncated'],
+        ];
     }
 
     /**
@@ -664,7 +732,7 @@ TXT;
 
         $temp = isset($payload['temperature']) ? (float) $payload['temperature'] : 0.6;
         $lastError = 'Gemini request failed.';
-        $deadline = microtime(true) + 48; // hard budget so PHP finishes before FE abort
+        $deadline = microtime(true) + 28; // hard budget so PHP finishes before FE abort and frees the server
 
         foreach ($models as $modelName) {
             if (microtime(true) >= $deadline) {
@@ -720,7 +788,7 @@ TXT;
             'contents' => $contents,
             'generationConfig' => [
                 'temperature' => $temp,
-                'maxOutputTokens' => 1400,
+                'maxOutputTokens' => 900,
             ],
         ];
 
@@ -737,8 +805,11 @@ TXT;
                 CURLOPT_POSTFIELDS => $json,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => self::REQUEST_TIMEOUT,
-                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_CONNECTTIMEOUT => 6,
             ]);
+            if (class_exists('SslCa')) {
+                SslCa::applyCurl($ch);
+            }
             $response = curl_exec($ch);
             $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $err = curl_error($ch) ?: '';

@@ -25,6 +25,62 @@ class Schema
         return in_array('users', $db->tables(), true);
     }
 
+    public static function ensureListIndexes(Database $db): void
+    {
+        $indexes = [
+            'idx_users_status' => 'users (status)',
+            'idx_users_farm' => 'users (farm_id)',
+            'idx_tasks_farm' => 'tasks (farm_id)',
+            'idx_notifications_farm' => 'notifications (farm_id)',
+            'idx_audit_farm' => 'audit_logs (farm_id)',
+            'idx_crop_growth_farm' => 'crop_growth (farm_id)',
+            'idx_attendance_employee' => 'attendance (employee_id)',
+        ];
+        foreach ($indexes as $name => $target) {
+            try {
+                $db->pdo()->exec('CREATE INDEX IF NOT EXISTS ' . $name . ' ON ' . $target);
+            } catch (Throwable $e) {
+            }
+        }
+    }
+
+    public static function ensureFarmCodeSecurity(Database $db): void
+    {
+        try {
+            foreach ($db->select("SELECT join_code FROM farms WHERE join_code IS NOT NULL AND join_code <> '' GROUP BY join_code HAVING COUNT(*) > 1") as $dup) {
+                $rows = $db->select('SELECT id, name FROM farms WHERE join_code = ? ORDER BY id ASC', [$dup['join_code']]);
+                $keep = true;
+                foreach ($rows as $row) {
+                    if ($keep) {
+                        $keep = false;
+                        continue;
+                    }
+                    $db->update('farms', ['join_code' => generate_join_code((string) ($row['name'] ?? ''))], $row['id']);
+                }
+            }
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_farms_join_code_unique ON farms (join_code)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $driver = $db->driver();
+            $idCol = $driver === 'pgsql' ? 'SERIAL PRIMARY KEY' : ($driver === 'mysql' ? 'INT AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT');
+            $ts = $driver === 'sqlite' ? 'TEXT' : ($driver === 'mysql' ? 'DATETIME' : 'TIMESTAMP');
+            $db->pdo()->exec(
+                "CREATE TABLE IF NOT EXISTS login_attempts (
+                    id {$idCol},
+                    identity VARCHAR(190) NOT NULL,
+                    ip VARCHAR(64) NULL,
+                    created_at {$ts} NOT NULL
+                )"
+            );
+            $db->pdo()->exec('CREATE INDEX IF NOT EXISTS idx_login_attempts_identity ON login_attempts (identity, created_at)');
+        } catch (Throwable $e) {
+        }
+    }
+
     public static function migrate(Database $db): void
     {
         // Ensure any newly added definitions exist (install skips tables already present)
@@ -44,9 +100,10 @@ class Schema
         if (!isset($farmColSet['join_code'])) {
             $db->pdo()->exec('ALTER TABLE farms ADD COLUMN join_code VARCHAR(20) NULL');
         }
-        foreach ($db->select("SELECT id FROM farms WHERE join_code IS NULL OR join_code = ''") as $farm) {
-            $db->update('farms', ['join_code' => generate_join_code()], $farm['id']);
+        foreach ($db->select("SELECT id, name FROM farms WHERE join_code IS NULL OR join_code = ''") as $farm) {
+            $db->update('farms', ['join_code' => generate_join_code((string) ($farm['name'] ?? ''))], $farm['id']);
         }
+        self::ensureFarmCodeSecurity($db);
         // Additive column migrations (safe to re-run)
         self::ensureColumn($db, 'transactions', 'related_id', 'INT NULL');
         self::ensureColumn($db, 'harvests', 'warehouse_id', 'INT NULL');
@@ -123,6 +180,7 @@ class Schema
         self::ensureColumn($db, 'farms', 'landmark', 'VARCHAR(255) NULL');
         self::ensureColumn($db, 'farms', 'location_precision', "VARCHAR(20) DEFAULT 'none'");
         self::ensureColumn($db, 'farms', 'location_label', 'VARCHAR(255) NULL');
+        self::ensureColumn($db, 'farms', 'boundary_geojson', 'TEXT NULL');
         // Role-based registration / multi-farm assignment
         self::ensureColumn($db, 'users', 'username', 'VARCHAR(80) NULL');
         self::ensureColumn($db, 'users', 'requested_role', 'VARCHAR(40) NULL');
@@ -167,6 +225,152 @@ class Schema
         }
         try {
             $db->pdo()->exec('CREATE INDEX IF NOT EXISTS idx_stock_movements_reference ON stock_movements (reference)');
+        } catch (Throwable $e) {
+        }
+        self::ensureMarketAndAgriSchema($db);
+        self::ensureEmployeeSchema($db);
+    }
+
+    public static function ensureOpsUiSchema(Database $db): void
+    {
+        // Clear cached table list so newly defined tables (e.g. calendar_events) are created.
+        try {
+            $ref = new ReflectionClass($db);
+            if ($ref->hasProperty('tableNames')) {
+                $prop = $ref->getProperty('tableNames');
+                $prop->setAccessible(true);
+                $prop->setValue($db, null);
+            }
+        } catch (Throwable $e) {
+        }
+        self::install($db);
+        self::ensureColumn($db, 'farms', 'boundary_geojson', 'TEXT NULL');
+        self::ensureColumn($db, 'fields', 'description', 'TEXT NULL');
+        try {
+            $db->pdo()->exec('CREATE INDEX IF NOT EXISTS idx_calendar_events_date ON calendar_events (event_date)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE INDEX IF NOT EXISTS idx_calendar_events_farm ON calendar_events (farm_id)');
+        } catch (Throwable $e) {
+        }
+    }
+
+    /**
+     * One-time cleanup: remove seeded Golden Valley demo farm + related demo rows,
+     * clear backlog notifications, keep user accounts.
+     */
+    public static function purgeDemoOpsData(Database $db): void
+    {
+        $farm = null;
+        try {
+            $farm = $db->first(
+                "SELECT id FROM farms WHERE name = ? AND (LOWER(COALESCE(location,'')) LIKE ? OR (latitude IS NOT NULL AND ABS(latitude - (-33.9321)) < 0.02)) LIMIT 1",
+                ['Golden Valley Estate', '%stellenbosch%']
+            );
+        } catch (Throwable $e) {
+            $farm = null;
+        }
+        if (!$farm) {
+            try {
+                $farm = $db->first('SELECT id FROM farms WHERE name = ? LIMIT 1', ['Golden Valley Estate']);
+            } catch (Throwable $e) {
+                $farm = null;
+            }
+        }
+        $farmId = (int) ($farm['id'] ?? 0);
+        if ($farmId > 0) {
+            $tables = $db->tables();
+            foreach ($tables as $table) {
+                if ($table === 'farms' || $table === 'users' || $table === 'user_farms') {
+                    continue;
+                }
+                try {
+                    $cols = array_flip($db->columns($table));
+                    if (!isset($cols['farm_id'])) {
+                        continue;
+                    }
+                    $db->query('DELETE FROM ' . $table . ' WHERE farm_id = ?', [$farmId]);
+                } catch (Throwable $e) {
+                    // skip tables that cannot be cleared
+                }
+            }
+            try {
+                if (in_array('user_farms', $tables, true)) {
+                    $db->query('DELETE FROM user_farms WHERE farm_id = ?', [$farmId]);
+                }
+            } catch (Throwable $e) {
+            }
+            try {
+                $db->query('UPDATE users SET farm_id = NULL WHERE farm_id = ?', [$farmId]);
+            } catch (Throwable $e) {
+            }
+            try {
+                $db->delete('farms', $farmId);
+            } catch (Throwable $e) {
+            }
+        }
+        try {
+            if (in_array('notifications', $db->tables(), true)) {
+                $db->query('DELETE FROM notifications');
+            }
+        } catch (Throwable $e) {
+        }
+        // Drop leftover demo field/task noise that was farm-scoped already removed above
+        session_memo_flush();
+    }
+
+    public static function ensureEmployeeSchema(Database $db): void
+    {
+        self::ensureColumn($db, 'employees', 'email', 'VARCHAR(160) NULL');
+        self::ensureColumn($db, 'employees', 'employment_type', 'VARCHAR(40) NULL');
+    }
+
+    public static function ensureMarketAndAgriSchema(Database $db): void
+    {
+        // New tables via install(); existing market_prices gets additive columns
+        self::install($db);
+        $mpCols = [
+            'price' => 'DECIMAL(14,4) NULL',
+            'unit' => 'VARCHAR(40) NULL',
+            'currency' => "VARCHAR(12) DEFAULT 'ZMW'",
+            'province' => 'VARCHAR(120) NULL',
+            'district' => 'VARCHAR(120) NULL',
+            'source' => "VARCHAR(40) DEFAULT 'farmer'",
+            'source_label' => 'VARCHAR(160) NULL',
+            'external_key' => 'VARCHAR(190) NULL',
+            'imported_at' => 'DATETIME NULL',
+        ];
+        foreach ($mpCols as $col => $def) {
+            self::ensureColumn($db, 'market_prices', $col, $def);
+        }
+        // price_per_kg was NOT NULL historically; leave as-is — inserts may use NULL via driver defaults if altered
+        try {
+            $db->pdo()->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_external_key ON market_prices (external_key)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE INDEX IF NOT EXISTS idx_market_prices_crop_date ON market_prices (crop_name, price_date)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE INDEX IF NOT EXISTS idx_market_prices_source ON market_prices (source)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_zamstats_crop_external ON zamstats_crop_stats (external_key)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE INDEX IF NOT EXISTS idx_zamstats_crop_lookup ON zamstats_crop_stats (province, crop_name, season_label)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_zamstats_rain_external ON zamstats_rainfall (external_key)');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->pdo()->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_zamstats_livestock_external ON zamstats_livestock (external_key)');
         } catch (Throwable $e) {
         }
     }
@@ -319,6 +523,7 @@ class Schema
                 'location_label' => 'VARCHAR(255) NULL',
                 'latitude' => 'DECIMAL(10,7) NULL',
                 'longitude' => 'DECIMAL(10,7) NULL',
+                'boundary_geojson' => 'TEXT NULL',
                 'total_area' => 'DECIMAL(12,2) DEFAULT 0',
                 'phone' => 'VARCHAR(40) NULL',
                 'email' => 'VARCHAR(160) NULL',
@@ -326,6 +531,21 @@ class Schema
                 'description' => 'TEXT NULL',
                 'established_date' => 'DATE NULL',
                 'status' => "VARCHAR(20) DEFAULT 'active'",
+                'created_at' => $now,
+                'updated_at' => $ts,
+            ],
+            'calendar_events' => [
+                'id' => $id,
+                'farm_id' => 'INT NULL',
+                'user_id' => 'INT NULL',
+                'title' => 'VARCHAR(160) NOT NULL',
+                'description' => 'TEXT NULL',
+                'event_date' => 'DATE NOT NULL',
+                'start_time' => 'VARCHAR(8) NULL',
+                'end_time' => 'VARCHAR(8) NULL',
+                'category' => "VARCHAR(40) DEFAULT 'general'",
+                'reminder' => 'INT DEFAULT 0',
+                'reminder_sent_at' => $ts,
                 'created_at' => $now,
                 'updated_at' => $ts,
             ],
@@ -341,6 +561,7 @@ class Schema
                 'latitude' => 'DECIMAL(10,7) NULL',
                 'longitude' => 'DECIMAL(10,7) NULL',
                 'boundary_notes' => 'TEXT NULL',
+                'description' => 'TEXT NULL',
                 'land_use' => 'VARCHAR(120) NULL',
                 'status' => "VARCHAR(20) DEFAULT 'active'",
                 'created_at' => $now,
@@ -675,6 +896,8 @@ class Schema
                 'user_id' => 'INT NULL',
                 'name' => 'VARCHAR(120) NOT NULL',
                 'role_title' => 'VARCHAR(80) NULL',
+                'employment_type' => 'VARCHAR(40) NULL',
+                'email' => 'VARCHAR(160) NULL',
                 'phone' => 'VARCHAR(40) NULL',
                 'hire_date' => 'DATE NULL',
                 'daily_rate' => 'DECIMAL(10,2) DEFAULT 0',
@@ -824,9 +1047,77 @@ class Schema
                 'crop_name' => 'VARCHAR(120) NOT NULL',
                 'market' => 'VARCHAR(120) NULL',
                 'price_date' => 'DATE NOT NULL',
-                'price_per_kg' => 'DECIMAL(12,2) NOT NULL',
+                'price_per_kg' => 'DECIMAL(12,2) NULL',
+                'price' => 'DECIMAL(14,4) NULL',
+                'unit' => 'VARCHAR(40) NULL',
+                'currency' => 'VARCHAR(12) DEFAULT \'ZMW\'',
+                'province' => 'VARCHAR(120) NULL',
+                'district' => 'VARCHAR(120) NULL',
+                'source' => "VARCHAR(40) DEFAULT 'farmer'",
+                'source_label' => 'VARCHAR(160) NULL',
+                'external_key' => 'VARCHAR(190) NULL',
+                'imported_at' => $ts,
                 'demand_level' => 'VARCHAR(20) DEFAULT \'medium\'',
                 'notes' => 'TEXT NULL',
+                'created_at' => $now,
+                'updated_at' => $ts,
+            ],
+            'zamstats_datasets' => [
+                'id' => $id,
+                'title' => 'VARCHAR(255) NOT NULL',
+                'source_url' => 'VARCHAR(500) NULL',
+                'season_label' => 'VARCHAR(40) NULL',
+                'period_start' => 'DATE NULL',
+                'period_end' => 'DATE NULL',
+                'license_note' => 'TEXT NULL',
+                'imported_by' => 'INT NULL',
+                'imported_at' => $ts,
+                'row_count' => 'INT DEFAULT 0',
+                'checksum' => 'VARCHAR(64) NULL',
+                'created_at' => $now,
+                'updated_at' => $ts,
+            ],
+            'zamstats_crop_stats' => [
+                'id' => $id,
+                'dataset_id' => 'INT NOT NULL',
+                'season_label' => 'VARCHAR(40) NOT NULL',
+                'crop_name' => 'VARCHAR(160) NOT NULL',
+                'province' => 'VARCHAR(120) NOT NULL',
+                'district' => 'VARCHAR(120) NULL',
+                'farm_category' => 'VARCHAR(40) NULL',
+                'area_planted_ha' => 'DECIMAL(16,4) NULL',
+                'area_harvested_ha' => 'DECIMAL(16,4) NULL',
+                'production_mt' => 'DECIMAL(16,4) NULL',
+                'yield_mt_ha' => 'DECIMAL(14,6) NULL',
+                'fertiliser_basal_mt' => 'DECIMAL(14,4) NULL',
+                'fertiliser_top_mt' => 'DECIMAL(14,4) NULL',
+                'sales_mt' => 'DECIMAL(16,4) NULL',
+                'source_sheet' => 'VARCHAR(80) NULL',
+                'external_key' => 'VARCHAR(190) NOT NULL',
+                'created_at' => $now,
+                'updated_at' => $ts,
+            ],
+            'zamstats_rainfall' => [
+                'id' => $id,
+                'dataset_id' => 'INT NOT NULL',
+                'season_label' => 'VARCHAR(40) NOT NULL',
+                'province' => 'VARCHAR(120) NULL',
+                'district' => 'VARCHAR(120) NULL',
+                'metric' => 'VARCHAR(80) NOT NULL',
+                'value' => 'DECIMAL(14,4) NULL',
+                'unit' => 'VARCHAR(40) NULL',
+                'external_key' => 'VARCHAR(190) NOT NULL',
+                'created_at' => $now,
+                'updated_at' => $ts,
+            ],
+            'zamstats_livestock' => [
+                'id' => $id,
+                'dataset_id' => 'INT NOT NULL',
+                'year_label' => 'VARCHAR(40) NOT NULL',
+                'province' => 'VARCHAR(120) NULL',
+                'species' => 'VARCHAR(120) NOT NULL',
+                'headcount' => 'DECIMAL(16,2) NULL',
+                'external_key' => 'VARCHAR(190) NOT NULL',
                 'created_at' => $now,
                 'updated_at' => $ts,
             ],

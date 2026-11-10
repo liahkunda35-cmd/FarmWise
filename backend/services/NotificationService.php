@@ -2,30 +2,51 @@
 
 class NotificationService
 {
+    /** @var array<string,int>|null */
+    private static ?array $todayKeys = null;
+
+    /** @var array<string,list<array<string,mixed>>> */
+    private static array $roleRecipients = [];
+
     public static function create(array $data): int
     {
-        // Postgres: prefer ::date; SQLite accepts date() — both work with CAST
+        self::loadToday();
+        $key = self::todayKey($data['title'] ?? '', $data['category'] ?? '', $data['farm_id'] ?? null, $data['user_id'] ?? null);
+        if (isset(self::$todayKeys[$key])) {
+            return (int) self::$todayKeys[$key];
+        }
+        $id = self::createForced($data);
+        self::$todayKeys[$key] = $id;
+        return $id;
+    }
+
+    private static function todayKey($title, $category, $farmId, $userId): string
+    {
+        $user = (int) $userId;
+        $farm = (int) $farmId;
+        if ($user > 0) {
+            return (string) $category . '|' . (string) $title . '|u' . $user;
+        }
+        if ($farm > 0) {
+            return (string) $category . '|' . (string) $title . '|f' . $farm;
+        }
+        return (string) $category . '|' . (string) $title . '|g';
+    }
+
+    private static function loadToday(): void
+    {
+        if (self::$todayKeys !== null) {
+            return;
+        }
+        self::$todayKeys = [];
         $today = date('Y-m-d');
-        if (!empty($data['user_id'])) {
-            $exists = db()->first(
-                'SELECT id FROM notifications WHERE title = ? AND category = ? AND user_id = ? AND CAST(created_at AS DATE) = CAST(? AS DATE)',
-                [$data['title'], $data['category'], $data['user_id'], $today]
-            );
-        } elseif (!empty($data['farm_id'])) {
-            $exists = db()->first(
-                'SELECT id FROM notifications WHERE title = ? AND category = ? AND farm_id = ? AND CAST(created_at AS DATE) = CAST(? AS DATE)',
-                [$data['title'], $data['category'], $data['farm_id'], $today]
-            );
-        } else {
-            $exists = db()->first(
-                'SELECT id FROM notifications WHERE title = ? AND category = ? AND farm_id IS NULL AND user_id IS NULL AND CAST(created_at AS DATE) = CAST(? AS DATE)',
-                [$data['title'], $data['category'], $today]
-            );
+        foreach (db()->select(
+            'SELECT id, title, category, farm_id, user_id FROM notifications WHERE CAST(created_at AS DATE) = CAST(? AS DATE)',
+            [$today]
+        ) as $row) {
+            $key = self::todayKey($row['title'] ?? '', $row['category'] ?? '', $row['farm_id'] ?? null, $row['user_id'] ?? null);
+            self::$todayKeys[$key] = (int) $row['id'];
         }
-        if ($exists) {
-            return (int) $exists['id'];
-        }
-        return self::createForced($data);
     }
 
     /** Always insert (used for registration alerts where uniqueness is per request). */
@@ -33,13 +54,61 @@ class NotificationService
     {
         $data['is_read'] = $data['is_read'] ?? 0;
         $data['created_at'] = $data['created_at'] ?? date('Y-m-d H:i:s');
+        if (isset($data['title'])) {
+            $data['title'] = mb_substr((string) $data['title'], 0, 160);
+        }
+        if (isset($data['link']) && $data['link'] !== null) {
+            $data['link'] = mb_substr((string) $data['link'], 0, 160);
+        }
         $id = db()->insert('notifications', $data);
         // Do not auto-email every forced in-app admin alert (AccountMail handles applicant emails).
         return $id;
     }
 
+    /** Push a calendar event into Alerts so it is visible for the active farm / creator. */
+    public static function notifyCalendarEvent(array $event, bool $updated = false): int
+    {
+        $eventId = (int) ($event['id'] ?? 0);
+        $title = trim((string) ($event['title'] ?? 'Event'));
+        $date = substr((string) ($event['event_date'] ?? ''), 0, 10);
+        $start = substr((string) ($event['start_time'] ?? ''), 0, 5);
+        $eventFarm = (int) ($event['farm_id'] ?? 0);
+        $activeFarm = (int) (Auth::farmId() ?: 0);
+        $farmId = $activeFarm > 0 ? $activeFarm : ($eventFarm > 0 ? $eventFarm : null);
+        $userId = (int) (Auth::id() ?: ($event['user_id'] ?? 0)) ?: null;
+        $timeBit = $start !== '' ? ' at ' . $start : '';
+        $prefix = $updated ? 'Calendar updated: ' : 'Calendar event: ';
+        // Personal alert (always listed for the creator) + farm-wide when a farm is set.
+        $id = self::createForced([
+            'category' => 'calendar',
+            'title' => $prefix . $title,
+            'message' => ($updated ? 'Updated for ' : 'Scheduled for ') . ($date !== '' ? $date : 'soon') . $timeBit . '.',
+            'severity' => 'info',
+            'link' => 'calendar?event=' . $eventId . ($date !== '' ? '&date=' . $date : ''),
+            'farm_id' => $farmId,
+            'user_id' => $userId,
+        ]);
+        if ($farmId && $userId) {
+            self::create([
+                'category' => 'calendar',
+                'title' => $prefix . $title,
+                'message' => ($updated ? 'Updated for ' : 'Scheduled for ') . ($date !== '' ? $date : 'soon') . $timeBit . '.',
+                'severity' => 'info',
+                'link' => 'calendar?event=' . $eventId . ($date !== '' ? '&date=' . $date : ''),
+                'farm_id' => $farmId,
+                'user_id' => null,
+            ]);
+        }
+        return $id;
+    }
+
     public static function unreadCount(?int $userId, ?int $farmId): int
     {
+        $cacheKey = 'unread:' . (int) ($userId ?: Auth::id()) . ':' . (int) $farmId . ':' . (Auth::isAdmin() ? 'a' : 'u');
+        $cached = session_memo_get($cacheKey);
+        if ($cached !== null) {
+            return (int) $cached;
+        }
         $sql = 'SELECT COUNT(*) FROM notifications WHERE is_read = 0';
         $params = [];
         if (Auth::check() && Auth::isAdmin()) {
@@ -47,14 +116,16 @@ class NotificationService
             $sql .= ' AND (user_id IS NULL OR user_id = ?)';
             $params[] = $userId ?: Auth::id();
         } elseif ($farmId) {
-            $sql .= ' AND (user_id = ? OR user_id IS NULL) AND (farm_id = ? OR farm_id IS NULL)';
+            $sql .= ' AND (user_id = ? OR (user_id IS NULL AND (farm_id = ? OR farm_id IS NULL)))';
             $params[] = $userId ?: 0;
             $params[] = $farmId;
         } else {
-            $sql .= ' AND user_id = ? AND farm_id IS NULL';
+            $sql .= ' AND user_id = ?';
             $params[] = $userId ?: 0;
         }
-        return (int) db()->value($sql, $params);
+        $count = (int) db()->value($sql, $params);
+        session_memo_set($cacheKey, $count, 15);
+        return $count;
     }
 
     public static function latest(int $limit = 8): array
@@ -65,11 +136,11 @@ class NotificationService
             $sql .= ' AND (user_id IS NULL OR user_id = ?)';
             $params[] = Auth::id();
         } elseif (Auth::farmId()) {
-            $sql .= ' AND (user_id = ? OR user_id IS NULL) AND (farm_id = ? OR farm_id IS NULL)';
+            $sql .= ' AND (user_id = ? OR (user_id IS NULL AND (farm_id = ? OR farm_id IS NULL)))';
             $params[] = Auth::id();
             $params[] = Auth::farmId();
         } else {
-            $sql .= ' AND user_id = ? AND farm_id IS NULL';
+            $sql .= ' AND user_id = ?';
             $params[] = Auth::id();
         }
         $sql .= ' ORDER BY id DESC LIMIT ' . (int) $limit;
@@ -218,6 +289,125 @@ class NotificationService
                 'severity' => 'danger',
                 'link' => 'module/water_logs',
             ]);
+        }
+
+        $today = date('Y-m-d');
+        foreach (db()->select(
+            "SELECT id, farm_id, title, due_date FROM tasks WHERE {$farmFilter} AND status NOT IN ('completed','cancelled') AND due_date IS NOT NULL AND due_date < ? ORDER BY due_date ASC LIMIT 25",
+            [$today]
+        ) as $row) {
+            self::notifyRoles((int) $row['farm_id'], ['owner', 'manager'], [
+                'category' => 'tasks',
+                'title' => 'Overdue task: ' . $row['title'],
+                'message' => '"' . $row['title'] . '" was due on ' . $row['due_date'] . ' and is not completed.',
+                'severity' => 'warning',
+                'link' => 'module/tasks/view/' . $row['id'],
+            ]);
+        }
+
+        foreach (db()->select(
+            "SELECT id, farm_id, name, category, planned_amount, period_start, period_end FROM budgets WHERE {$farmFilter} AND period_start <= ? AND period_end >= ? LIMIT 30",
+            [$today, $today]
+        ) as $budget) {
+            $planned = (float) ($budget['planned_amount'] ?? 0);
+            if ($planned <= 0) {
+                continue;
+            }
+            $params = [(int) $budget['farm_id'], $budget['period_start'], $budget['period_end']];
+            $categorySql = '';
+            $category = trim((string) ($budget['category'] ?? ''));
+            if ($category !== '') {
+                $categorySql = ' AND LOWER(category) = LOWER(?)';
+                $params[] = $category;
+            }
+            $spent = (float) db()->value(
+                "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE farm_id = ? AND type = 'expense' AND txn_date >= ? AND txn_date <= ?" . $categorySql,
+                $params
+            );
+            if ($spent <= $planned) {
+                continue;
+            }
+            self::notifyRoles((int) $budget['farm_id'], ['owner', 'accountant'], [
+                'category' => 'budget',
+                'title' => 'Budget exceeded: ' . $budget['name'],
+                'message' => 'Recorded expenses of ' . number_format($spent, 2) . ' are above the planned ' . number_format($planned, 2) . ' for this budget period.',
+                'severity' => 'warning',
+                'link' => 'reports?type=budget',
+            ]);
+        }
+
+        foreach (db()->select(
+            "SELECT id, farm_id, planting_id, health_status, record_date FROM crop_growth WHERE {$farmFilter} AND health_status IN ('stressed','diseased') AND record_date >= ? ORDER BY record_date DESC LIMIT 25",
+            [date('Y-m-d', strtotime('-14 days'))]
+        ) as $row) {
+            self::notifyRoles((int) $row['farm_id'], ['owner', 'manager', 'agronomist'], [
+                'category' => 'crop',
+                'title' => 'Crop condition needs review',
+                'message' => 'A growth record on ' . $row['record_date'] . ' is ' . $row['health_status'] . '. Review that planting before drawing a yield conclusion. More field records are required for a stronger recommendation.',
+                'severity' => $row['health_status'] === 'diseased' ? 'danger' : 'warning',
+                'link' => 'module/crop_growth/view/' . $row['id'],
+            ]);
+        }
+
+        // Calendar events → Alerts (all upcoming / recently saved events)
+        if (table_exists('calendar_events')) {
+            $reminderWindow = date('Y-m-d', strtotime('+30 days'));
+            foreach (db()->select(
+                "SELECT * FROM calendar_events WHERE event_date >= ? AND event_date <= ? AND (reminder_sent_at IS NULL) AND {$farmFilter} ORDER BY event_date ASC LIMIT 60",
+                [$today, $reminderWindow]
+            ) as $row) {
+                self::notifyCalendarEvent($row, false);
+                try {
+                    db()->update('calendar_events', ['reminder_sent_at' => date('Y-m-d H:i:s')], (int) $row['id']);
+                } catch (Throwable $e) {
+                }
+            }
+        }
+
+        // Weather warnings from saved weather logs
+        if (table_exists('weather_logs')) {
+            foreach (db()->select(
+                "SELECT * FROM weather_logs WHERE {$farmFilter} AND alert_level IN ('watch','extreme','warning','danger') AND log_date >= ? ORDER BY log_date DESC LIMIT 20",
+                [date('Y-m-d', strtotime('-2 days'))]
+            ) as $row) {
+                self::create([
+                    'farm_id' => $row['farm_id'],
+                    'category' => 'weather',
+                    'title' => 'Weather alert: ' . ($row['alert_level'] ?? 'watch'),
+                    'message' => 'Logged conditions on ' . $row['log_date'] . ' may affect outdoor work.',
+                    'severity' => (($row['alert_level'] ?? '') === 'extreme' || ($row['alert_level'] ?? '') === 'danger') ? 'danger' : 'warning',
+                    'link' => 'weather',
+                ]);
+            }
+        }
+    }
+
+    /** @param list<string> $roles @param array<string,mixed> $data */
+    private static function notifyRoles(int $farmId, array $roles, array $data): void
+    {
+        if ($farmId <= 0 || $roles === []) {
+            return;
+        }
+        $recipientKey = $farmId . ':' . implode(',', $roles);
+        if (!isset(self::$roleRecipients[$recipientKey])) {
+            $placeholders = implode(',', array_fill(0, count($roles), '?'));
+            $params = $roles;
+            $params[] = $farmId;
+            if (table_exists('user_farms')) {
+                $params[] = $farmId;
+                $sql = "SELECT DISTINCT id FROM users WHERE status = 'active' AND role IN ({$placeholders}) AND (farm_id = ? OR id IN (SELECT user_id FROM user_farms WHERE farm_id = ?))";
+            } else {
+                $sql = "SELECT id FROM users WHERE status = 'active' AND role IN ({$placeholders}) AND farm_id = ?";
+            }
+            self::$roleRecipients[$recipientKey] = db()->select($sql, $params);
+        }
+        $users = self::$roleRecipients[$recipientKey];
+        if (!$users) {
+            self::create($data + ['farm_id' => $farmId]);
+            return;
+        }
+        foreach ($users as $user) {
+            self::create($data + ['farm_id' => $farmId, 'user_id' => (int) $user['id']]);
         }
     }
 }

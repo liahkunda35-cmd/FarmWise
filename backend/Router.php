@@ -13,6 +13,11 @@ class Router
             return;
         }
 
+        if ($head === 'register' && ($parts[1] ?? '') === 'farm-preview') {
+            AuthController::farmPreview();
+            return;
+        }
+
         match ($head) {
             'login' => request_method() === 'POST' ? AuthController::login() : AuthController::loginForm(),
             'register' => request_method() === 'POST' ? AuthController::register() : AuthController::registerForm(),
@@ -32,6 +37,10 @@ class Router
         $action = $parts[1] ?? '';
         if ($action === 'chat' && is_post()) {
             AssistantController::chat();
+            return;
+        }
+        if ($action === 'speak' && is_post()) {
+            AssistantController::speak();
             return;
         }
         abort(404, 'Assistant route not found.');
@@ -82,6 +91,14 @@ class Router
             return;
         }
         if ($head === 'calendar') {
+            if ($a === 'save' && is_post()) {
+                WorkspaceController::saveCalendarEvent();
+                return;
+            }
+            if ($a === 'delete' && is_post()) {
+                WorkspaceController::deleteCalendarEvent();
+                return;
+            }
             WorkspaceController::calendar();
             return;
         }
@@ -96,6 +113,10 @@ class Router
             }
             if ($a === 'read' && $b) {
                 AppPagesController::markRead($b);
+                return;
+            }
+            if ($a === 'dismiss' && $b && is_post()) {
+                AppPagesController::dismissNotification($b);
                 return;
             }
             AppPagesController::notifications();
@@ -117,6 +138,10 @@ class Router
             AppPagesController::marketInsights();
             return;
         }
+        if ($head === 'agri-history') {
+            AppPagesController::agriHistory();
+            return;
+        }
         if ($head === 'users') {
             if ($a === 'pending' && $b) {
                 if (is_post() && $c === 'approve') {
@@ -125,6 +150,10 @@ class Router
                 }
                 if (is_post() && $c === 'reject') {
                     AppPagesController::rejectRegistration($b);
+                    return;
+                }
+                if (is_post() && $c === 'resend-email') {
+                    AppPagesController::resendRegistrationEmail($b);
                     return;
                 }
                 AppPagesController::pendingRegistration($b);
@@ -136,6 +165,10 @@ class Router
             }
             if ($a === 'save') {
                 AppPagesController::saveUser($b);
+                return;
+            }
+            if ($a === 'status' && $b && is_post()) {
+                AppPagesController::setUserStatus($b);
                 return;
             }
             if ($a === 'delete' && $b) {
@@ -170,7 +203,43 @@ class Router
             return;
         }
         if ($head === 'map') {
+            if ($a === 'save-location' && is_post()) {
+                AppPagesController::saveMapLocation();
+                return;
+            }
             AppPagesController::map();
+            return;
+        }
+        if ($head === 'fields-planner') {
+            if ($a === 'save' && is_post()) {
+                AppPagesController::saveFieldsPlanner();
+                return;
+            }
+            if ($a === 'save-field' && is_post()) {
+                AppPagesController::saveFieldJson();
+                return;
+            }
+            if ($a === 'delete-field' && is_post()) {
+                AppPagesController::deleteFieldJson();
+                return;
+            }
+            AppPagesController::fieldsPlanner();
+            return;
+        }
+        if ($head === 'fields-options') {
+            AppPagesController::fieldsOptions();
+            return;
+        }
+        if ($head === 'crop-rotation') {
+            if ($a === 'field-report' && $b) {
+                AppPagesController::cropRotationFieldReport($b);
+                return;
+            }
+            if ($a === 'farm-report') {
+                AppPagesController::cropRotationFarmReport();
+                return;
+            }
+            AppPagesController::cropRotationMap();
             return;
         }
         if ($head === 'geocode') {

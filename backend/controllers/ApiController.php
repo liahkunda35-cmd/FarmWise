@@ -19,7 +19,12 @@ class ApiController
                 return;
             }
             $user = self::requireToken();
+            $tokenFarm = (int) ($user['_token_farm_id'] ?? 0);
+            unset($user['_token_farm_id']);
             Auth::setOverride($user);
+            if ($tokenFarm > 0 && Auth::userBelongsToFarm($user, $tokenFarm)) {
+                $_SESSION['active_farm_id'] = $tokenFarm;
+            }
             match ($action) {
                 'me' => self::ok(['user' => self::publicUser($user)]),
                 'dashboard' => self::dashboard(),
@@ -38,19 +43,29 @@ class ApiController
     private static function login(): void
     {
         $body = self::json();
-        $email = strtolower(trim((string) ($body['email'] ?? '')));
+        $email = trim((string) ($body['email'] ?? ''));
         $password = (string) ($body['password'] ?? '');
-        $user = db()->first('SELECT * FROM users WHERE email = ?', [$email]);
-        if (!$user || $user['status'] !== 'active' || !password_verify($password, $user['password'])) {
-            self::fail(401, 'Invalid credentials.');
+        $result = Auth::authenticate($email, $password);
+        if (empty($result['ok']) || empty($result['user'])) {
+            $error = (string) ($result['error'] ?? 'Invalid credentials.');
+            $code = str_contains($error, 'not allowed') ? 403 : 401;
+            self::fail($code, $error);
+        }
+        $user = $result['user'];
+        if (!Auth::isKnownRole((string) ($user['role'] ?? ''))) {
+            self::fail(403, 'This account is not allowed to sign in.');
         }
         $token = Jwt::encode([
             'sub' => (int) $user['id'],
             'role' => $user['role'],
-            'farm_id' => $user['farm_id'],
+            'farm_id' => $result['farm_id'] ?? $user['farm_id'],
         ]);
         Audit::log('api_login', 'auth', $user['id'], 'JWT issued');
-        self::ok(['token' => $token, 'token_type' => 'Bearer', 'expires_in' => 86400, 'user' => self::publicUser($user)]);
+        $public = self::publicUser($user);
+        if (!empty($result['farm_id'])) {
+            $public['farm_id'] = (int) $result['farm_id'];
+        }
+        self::ok(['token' => $token, 'token_type' => 'Bearer', 'expires_in' => 86400, 'user' => $public]);
     }
 
     private static function requireToken(): array
@@ -71,6 +86,12 @@ class ApiController
         if (!$user || $user['status'] !== 'active') {
             self::fail(401, 'Account is not active.');
         }
+        if (!Auth::isKnownRole((string) ($user['role'] ?? ''))) {
+            self::fail(403, 'This account is not allowed to sign in.');
+        }
+        if (!empty($payload['farm_id'])) {
+            $user['_token_farm_id'] = (int) $payload['farm_id'];
+        }
         return $user;
     }
 
@@ -87,12 +108,26 @@ class ApiController
             $farmSql = '1=0';
             $farmWhere = ' WHERE 1=0';
         }
-        $payload = [
-            'acreage' => (float) db()->value('SELECT COALESCE(SUM(total_area),0) FROM farms' . $farmWhere),
-            'active_crops' => (int) db()->value("SELECT COUNT(*) FROM plantings WHERE {$farmSql} AND status IN ('planted','growing')"),
-            'livestock' => (int) db()->value("SELECT COUNT(*) FROM animals WHERE {$farmSql} AND status='active'"),
-            'alerts' => (int) db()->value("SELECT COUNT(*) FROM notifications WHERE is_read=0 AND ({$farmSql} OR farm_id IS NULL)"),
-        ];
+        $payload = ['role' => Auth::role()];
+        if (Auth::can('farms', 'view')) {
+            $payload['acreage'] = (float) db()->value('SELECT COALESCE(SUM(total_area),0) FROM farms' . $farmWhere);
+        }
+        if (Auth::can('plantings', 'view')) {
+            $payload['active_crops'] = (int) db()->value("SELECT COUNT(*) FROM plantings WHERE {$farmSql} AND status IN ('planted','growing')");
+        }
+        if (Auth::can('animals', 'view')) {
+            $payload['livestock'] = (int) db()->value("SELECT COUNT(*) FROM animals WHERE {$farmSql} AND status='active'");
+        }
+        if (Auth::can('notifications', 'view')) {
+            $payload['alerts'] = NotificationService::unreadCount(Auth::id(), Auth::farmId());
+        }
+        if (Auth::can('tasks', 'view')) {
+            [$taskSql, $taskParams] = TaskAccess::listConstraint();
+            $payload['open_tasks'] = (int) db()->value(
+                "SELECT COUNT(*) FROM tasks WHERE {$farmSql}{$taskSql} AND status != 'completed'",
+                $taskParams
+            );
+        }
         if (Auth::can('transactions', 'view')) {
             $payload['revenue'] = (float) db()->value("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE {$farmSql} AND type='income'");
             $payload['expenses'] = (float) db()->value("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE {$farmSql} AND type='expense'");
@@ -261,6 +296,17 @@ class ApiController
                 }
                 $clean['farm_id'] = Auth::farmId();
             }
+            // Other farms are hidden (404) before a same-farm ownership check can return 403.
+            $existingRow = null;
+            if ($id) {
+                $existingRow = db()->find($table, $id);
+                if (!$existingRow || !Auth::canAccessRecord($existingRow)) {
+                    self::fail(404, 'Record not found.');
+                }
+                if ($table === 'farms' && !Auth::isAdmin() && !Auth::canAccessFarm((int) $existingRow['id'])) {
+                    self::fail(404, 'Record not found.');
+                }
+            }
             if ($table === 'tasks' && Auth::role() === 'worker') {
                 if (!$id) {
                     self::fail(403, 'You can only update tasks assigned to you.');
@@ -281,7 +327,7 @@ class ApiController
                 $clean['recorded_by'] = Auth::id();
             }
             $clean = WorkerRecords::sanitizePayload($key, $clean);
-            $workerErr = WorkerRecords::saveError($key, $clean, $id ? db()->find($table, $id) : null);
+            $workerErr = WorkerRecords::saveError($key, $clean, $existingRow);
             if ($workerErr !== null) {
                 self::fail(403, $workerErr);
             }
@@ -401,7 +447,16 @@ class ApiController
     private static function json(): array
     {
         $raw = file_get_contents('php://input');
-        $data = json_decode($raw ?: '[]', true);
+        // php://input is empty when a test invokes the controller directly.
+        // The buffer is ignored unless the disposable test flag is set, so production
+        // still reads only the real request body.
+        if ((!is_string($raw) || $raw === '') && (string) (getenv('IFMS_TEST_CAPTURE') ?: '') === '1') {
+            $buffered = $GLOBALS['IFMS_TEST_BODY'] ?? null;
+            if (is_string($buffered)) {
+                $raw = $buffered;
+            }
+        }
+        $data = json_decode(is_string($raw) && $raw !== '' ? $raw : '[]', true);
         return is_array($data) ? $data : [];
     }
 

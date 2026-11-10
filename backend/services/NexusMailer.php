@@ -35,6 +35,11 @@ class NexusMailer
         return rtrim(trim((string) $url), '/');
     }
 
+    public static function isHub(): bool
+    {
+        return str_contains(self::baseUrl(), 'nexuszm.com');
+    }
+
     public static function provider(): string
     {
         $p = getenv('NEXUS_PROVIDER') ?: ($_ENV['NEXUS_PROVIDER'] ?? Settings::get('nexus_provider', 'nexuspromail'));
@@ -89,15 +94,18 @@ class NexusMailer
                 'error' => 'Nexus email is not configured. Set NEXUS_API_KEY and NEXUS_API_URL (and sender details) on the server.',
             ];
         }
+        $text = $textBody ?? trim(strip_tags(str_replace(['<br>', '<br/>', '<br />', '</p>'], "\n", $htmlBody)));
+        if (self::isHub()) {
+            return self::sendHub($to, $subject, $htmlBody, $text);
+        }
         // NexusProMail expects a verified from-address; fail clearly before calling the API.
         if (self::fromEmail() === '' && self::provider() !== 'wrnexus') {
             return [
                 'ok' => false,
-                'error' => 'NEXUS_FROM_EMAIL is not set. Add a verified sender address in .env / .env.local (server-side only).',
+                'error' => 'NEXUS_FROM_EMAIL is not set. Add the verified from-address saved on the NexusProMail domain.',
             ];
         }
 
-        $text = $textBody ?? trim(strip_tags(str_replace(['<br>', '<br/>', '<br />', '</p>'], "\n", $htmlBody)));
         $provider = self::provider();
 
         if ($provider === 'wrnexus') {
@@ -169,6 +177,99 @@ class NexusMailer
         return $last;
     }
 
+    /**
+     * Nexus Hub (nexuszm.com) sends from the from-address saved on the project.
+     * A 202 only means queued. Delivery is confirmed when status becomes sent.
+     * @return array{ok:bool,error:?string,provider?:string,http?:int,raw?:string,endpoint?:string,status?:string,mode?:string}
+     */
+    private static function sendHub(string $to, string $subject, string $html, string $text): array
+    {
+        // Prefer an explicit env template; otherwise send as raw custom content so
+        // dashboard templates cannot strip login details / temporary passwords.
+        $template = self::templateId('account_message');
+        if ($template === '') {
+            $template = 'custom';
+        }
+        $url = self::baseUrl() . '/notifications';
+        $payload = [
+            'template' => $template,
+            'to' => $to,
+            'type' => 'email',
+            'subject' => $subject,
+            'html' => $html,
+            'text' => $text,
+            'body' => $text,
+            'message' => $text,
+            'content' => $html,
+            'data' => [
+                'subject' => $subject,
+                'message' => $text,
+                'body' => $text,
+                'text' => $text,
+                'html' => $html,
+                'content' => $text,
+            ],
+        ];
+        $queued = self::postJson($url, $payload, 'nexushub');
+        $queued['endpoint'] = $url;
+        // If Hub rejects unknown "custom" template, retry with account_message but keep full bodies.
+        if (empty($queued['ok']) && $template === 'custom') {
+            $payload['template'] = 'account_message';
+            $retry = self::postJson($url, $payload, 'nexushub');
+            $retry['endpoint'] = $url;
+            if (!empty($retry['ok'])) {
+                $queued = $retry;
+            }
+        }
+        if (empty($queued['ok'])) {
+            return $queued;
+        }
+        $requestId = trim((string) ($queued['request_id'] ?? ''));
+        if ($requestId === '') {
+            return [
+                'ok' => false,
+                'error' => 'Nexus queued the message without a request id, so delivery was not confirmed.',
+                'provider' => 'nexushub',
+                'http' => $queued['http'] ?? null,
+                'endpoint' => $url,
+                'status' => (string) ($queued['status'] ?? 'queued'),
+            ];
+        }
+        $status = (string) ($queued['status'] ?? 'queued');
+        $mode = (string) ($queued['mode'] ?? '');
+        $last = $queued;
+        $deadline = time() + 15;
+        while (time() < $deadline && ($status === '' || $status === 'queued')) {
+            usleep(800000);
+            $last = self::getJson(self::baseUrl() . '/notifications/' . rawurlencode($requestId), 'nexushub');
+            $status = (string) ($last['status'] ?? $status);
+            $mode = (string) ($last['mode'] ?? $mode);
+            if (!empty($last['error']) && $status !== 'queued' && $status !== 'sent') {
+                break;
+            }
+        }
+        $last['endpoint'] = $url;
+        $last['status'] = $status;
+        $last['mode'] = $mode;
+        if ($status === 'sent' && $mode !== 'test') {
+            $last['ok'] = true;
+            $last['error'] = null;
+            return $last;
+        }
+        if ($mode === 'test') {
+            $last['ok'] = false;
+            $last['error'] = 'Nexus stored this message in the test mailbox. It was not delivered to an inbox.';
+            return $last;
+        }
+        $last['ok'] = false;
+        if (empty($last['error']) || $status === 'queued') {
+            $last['error'] = $status === 'queued'
+                ? 'Nexus has not confirmed delivery yet. The message is still queued.'
+                : ('Nexus did not confirm delivery (status: ' . ($status !== '' ? $status : 'unknown') . ').');
+        }
+        return $last;
+    }
+
     /** @return array{ok:bool,error:?string,provider?:string,http?:int,raw?:string,endpoint?:string} */
     private static function sendWrNexus(string $to, string $subject, string $html, string $text): array
     {
@@ -196,6 +297,50 @@ class NexusMailer
         return $result;
     }
 
+    /** @return array{ok:bool,error:?string,provider?:string,http?:int,status?:string,mode?:string,request_id?:string} */
+    private static function getJson(string $url, string $provider): array
+    {
+        $headers = [
+            'Authorization: Bearer ' . self::apiKey(),
+            'Accept: application/json',
+        ];
+        $http = 0;
+        $raw = '';
+        $err = '';
+        if (!function_exists('curl_init')) {
+            return ['ok' => false, 'error' => 'HTTP client is not available.', 'provider' => $provider, 'http' => 0];
+        }
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_CONNECTTIMEOUT => 8,
+        ]);
+        if (class_exists('SslCa')) {
+            SslCa::applyCurl($ch);
+        }
+        $raw = (string) curl_exec($ch);
+        $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch) ?: '';
+        curl_close($ch);
+        if ($raw === '' && $err !== '') {
+            return ['ok' => false, 'error' => 'Nexus network error: ' . $err, 'provider' => $provider, 'http' => $http];
+        }
+        $data = json_decode($raw, true);
+        $status = is_array($data) ? (string) ($data['status'] ?? '') : '';
+        $error = is_array($data) ? (string) ($data['error_message'] ?? $data['error'] ?? '') : '';
+        return [
+            'ok' => $http >= 200 && $http < 300 && $error === '',
+            'error' => $error !== '' ? self::safeError($error) : null,
+            'provider' => $provider,
+            'http' => $http,
+            'status' => $status,
+            'mode' => is_array($data) ? (string) ($data['mode'] ?? '') : '',
+            'request_id' => is_array($data) ? (string) ($data['request_id'] ?? '') : '',
+        ];
+    }
+
     /** @return array{ok:bool,error:?string,provider?:string,http?:int,raw?:string} */
     private static function postJson(string $url, array $payload, string $provider): array
     {
@@ -216,6 +361,7 @@ class NexusMailer
                 CURLOPT_HTTPHEADER => $headers,
                 CURLOPT_POSTFIELDS => $json,
                 CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HEADER => true,
                 CURLOPT_TIMEOUT => 25,
                 CURLOPT_CONNECTTIMEOUT => 10,
             ]);
@@ -225,10 +371,21 @@ class NexusMailer
                 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
                 curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
             }
-            $raw = (string) curl_exec($ch);
+            $packed = (string) curl_exec($ch);
             $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
             $err = curl_error($ch) ?: '';
             curl_close($ch);
+            $respHeaders = substr($packed, 0, $headerSize);
+            $raw = substr($packed, $headerSize);
+            if (self::isFirewallBlock($http, $respHeaders, $raw)) {
+                return [
+                    'ok' => false,
+                    'error' => 'Your network firewall (Sophos) is blocking Nexus email hosts. Use “Open email app” to send login details, or allowlist nexuszm.com.',
+                    'provider' => $provider,
+                    'http' => $http,
+                ];
+            }
             if ($err !== '' && class_exists('SslCa') && ($hint = SslCa::diagnoseHint($err))) {
                 $err = $err . ' — ' . $hint;
             }
@@ -263,7 +420,15 @@ class NexusMailer
                     'raw' => self::safeError($raw),
                 ];
             }
-            return ['ok' => true, 'error' => null, 'provider' => $provider, 'http' => $http];
+            return [
+                'ok' => true,
+                'error' => null,
+                'provider' => $provider,
+                'http' => $http,
+                'request_id' => is_array($data) ? (string) ($data['request_id'] ?? '') : '',
+                'status' => is_array($data) ? (string) ($data['status'] ?? '') : '',
+                'mode' => is_array($data) ? (string) ($data['mode'] ?? '') : '',
+            ];
         }
 
         $msg = '';
@@ -288,6 +453,18 @@ class NexusMailer
         ];
     }
 
+    private static function isFirewallBlock(int $http, string $headers, string $body): bool
+    {
+        $blob = strtolower($headers . "\n" . $body);
+        if (str_contains($blob, '/v1/ips/block') || str_contains($blob, '172.16.16.16:8090')) {
+            return true;
+        }
+        if ($http === 307 && preg_match('/^location:\s*.*ips\/block/mi', $headers)) {
+            return true;
+        }
+        return false;
+    }
+
     private static function safeError(string $msg): string
     {
         $msg = preg_replace('/Bearer\s+[A-Za-z0-9._\-]+/i', 'Bearer REDACTED', $msg) ?? $msg;
@@ -305,7 +482,9 @@ class NexusMailer
             'NEXUS_API_KEY' => self::apiKey() !== '' ? 'set' : 'missing',
             'NEXUS_API_URL' => self::baseUrl(),
             'NEXUS_PROVIDER' => self::provider(),
-            'NEXUS_FROM_EMAIL' => self::fromEmail() !== '' ? 'set' : 'missing',
+            'NEXUS_FROM_EMAIL' => self::isHub()
+                ? 'project sender (Nexus Hub does not use this variable)'
+                : (self::fromEmail() !== '' ? 'set' : 'missing'),
             'NEXUS_FROM_NAME' => self::fromName(),
             'NEXUS_SENDER_KEY' => self::provider() === 'wrnexus'
                 ? (self::senderKey() !== '' ? 'set' : 'missing (required for WRNexus)')

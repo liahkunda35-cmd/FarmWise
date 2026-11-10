@@ -97,7 +97,7 @@ class OperationHooks
         if ($table === 'farms') {
             $farm = db()->find('farms', $id);
             if ($farm && empty($farm['join_code'])) {
-                db()->update('farms', ['join_code' => generate_join_code()], $id);
+                db()->update('farms', ['join_code' => generate_join_code((string) ($farm['name'] ?? ''))], $id);
             }
             if ($created && Auth::role() === 'owner') {
                 db()->update('farms', ['owner_id' => Auth::id()], $id);
@@ -165,6 +165,10 @@ class OperationHooks
             }
         }
 
+        if ($table === 'fields' && !empty($payload['farm_id'])) {
+            self::refreshFarmAreaFromFields((int) $payload['farm_id']);
+        }
+
         if ($table === 'tasks') {
             self::notifyTaskChange($payload, $id, $created, $previous);
         }
@@ -182,6 +186,20 @@ class OperationHooks
         if ($table === 'quotations') {
             WorkflowService::ensurePurchaseOrder($payload, $id);
         }
+    }
+
+    /** Keep the farm area equal to the sum of its mapped fields once any field exists. */
+    private static function refreshFarmAreaFromFields(int $farmId): void
+    {
+        if ($farmId <= 0) {
+            return;
+        }
+        $count = (int) db()->value('SELECT COUNT(*) FROM fields WHERE farm_id = ?', [$farmId]);
+        if ($count < 1) {
+            return;
+        }
+        $sum = (float) db()->value('SELECT COALESCE(SUM(size_hectares),0) FROM fields WHERE farm_id = ?', [$farmId]);
+        db()->update('farms', ['total_area' => round($sum, 2)], $farmId);
     }
 
     /** Notify assignee + farm owners/managers when a task is created or status changes. */

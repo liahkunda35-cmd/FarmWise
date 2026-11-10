@@ -23,6 +23,7 @@ class ReversalService
             'harvests' => self::harvestDeleteMessage($id),
             'storage_lots' => self::storageLotDeleteMessage($id),
             'purchase_orders' => self::poDeleteMessage($row),
+            'fields' => self::fieldDeleteMessage($id),
             default => null,
         };
     }
@@ -105,6 +106,23 @@ class ReversalService
     {
         if ((string) ($row['status'] ?? '') === 'received') {
             return 'Received purchase orders cannot be deleted (stock may already be in inventory). Cancel or adjust stock with a compensating movement.';
+        }
+        return null;
+    }
+
+    private static function fieldDeleteMessage(int $id): ?string
+    {
+        $plantings = (int) db()->value('SELECT COUNT(*) FROM plantings WHERE field_id = ?', [$id]);
+        if ($plantings > 0) {
+            return 'This field has planting history and cannot be deleted. Mark it vacant in Fields & Plots instead so historical records stay intact.';
+        }
+        $soil = (int) db()->value('SELECT COUNT(*) FROM soil_records WHERE field_id = ?', [$id]);
+        if ($soil > 0) {
+            return 'This field has soil records. Mark it vacant instead of deleting so history remains.';
+        }
+        $rot = (int) db()->value('SELECT COUNT(*) FROM crop_rotations WHERE field_id = ?', [$id]);
+        if ($rot > 0) {
+            return 'This field has crop rotation notes. Mark it vacant instead of deleting.';
         }
         return null;
     }

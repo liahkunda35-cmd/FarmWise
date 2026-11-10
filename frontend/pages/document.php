@@ -21,8 +21,14 @@ $party = $doc['party'] ?? [];
             <p><?= e($party['address'] ?? $party['destination'] ?? '') ?></p>
         </div>
         <div>
-            <p>Issue date: <strong><?= dater($doc['issue_date']) ?></strong></p>
-            <p>Due / valid: <strong><?= dater($doc['due_date']) ?></strong></p>
+            <?php if (($doc['module'] ?? '') === 'payroll'): ?>
+                <p>Period: <strong><?= dater($doc['period_start'] ?? null) ?> → <?= dater($doc['period_end'] ?? null) ?></strong></p>
+                <p>Days worked: <strong><?= e($doc['days_worked'] ?? '—') ?></strong></p>
+                <p>Paid / issue: <strong><?= dater($doc['issue_date']) ?></strong></p>
+            <?php else: ?>
+                <p>Issue date: <strong><?= dater($doc['issue_date']) ?></strong></p>
+                <p>Due / valid: <strong><?= dater($doc['due_date']) ?></strong></p>
+            <?php endif; ?>
             <p>Status: <?= status_badge($doc['status']) ?></p>
             <?php if ($doc['payment_status']): ?><p>Payment: <?= status_badge($doc['payment_status']) ?></p><?php endif; ?>
             <p>Currency: <?= e(app_currency()) ?></p>

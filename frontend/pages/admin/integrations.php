@@ -50,7 +50,7 @@
     <header>
         <div>
             <h3>Nexus email API</h3>
-            <p class="muted">Configured via <code>.env.local</code> (<code>NEXUS_API_KEY</code>, <code>NEXUS_API_URL</code>, sender/from). Never paste keys into the browser.</p>
+            <p class="muted">Configured on the server (<code>NEXUS_API_KEY</code>, <code>NEXUS_API_URL</code>). Nexus Hub uses the from-address saved on the project. NexusProMail uses <code>NEXUS_FROM_EMAIL</code>. Never paste keys into the browser.</p>
         </div>
     </header>
     <?php $nx = class_exists('NexusMailer') ? NexusMailer::checklist() : []; ?>
@@ -86,6 +86,6 @@
             <button class="btn btn-gold btn-sm" type="submit">Send test SMS</button>
         </form>
     </div>
-    <p class="muted">JWT API: <code>POST /api/login</code> with JSON <code>{"email","password"}</code>, then <code>Authorization: Bearer &lt;token&gt;</code> for <code>/api/me</code>, <code>/api/dashboard</code>, <code>/api/weather</code>, <code>/api/notifications</code> and <code>/api/module/{name}</code>.</p>
+    <p class="muted">JWT API: <code>POST /api/login</code> with JSON <code>{"email","password"}</code>. Then send <code>Authorization: Bearer &lt;token&gt;</code> for <code>/api/me</code>, <code>/api/dashboard</code>, <code>/api/weather</code>, <code>/api/notifications</code> and <code>/api/module/{name}</code>.</p>
 </section>
 

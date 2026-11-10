@@ -256,6 +256,168 @@
     renderFavs();
   }
 
+  /* ---------- Searchable Farm / Field selects ---------- */
+  function rebuildSearchList(wrap, select, query) {
+    const list = wrap.querySelector('[data-search-list]');
+    if (!list) return;
+    const q = String(query || '').trim().toLowerCase();
+    list.innerHTML = '';
+    let shown = 0;
+    $all('option', select).forEach(function (opt) {
+      if (!opt.value || opt.disabled || opt.hidden) return;
+      const label = (opt.textContent || '').trim();
+      if (q && label.toLowerCase().indexOf(q) === -1) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'searchable-option';
+      btn.setAttribute('role', 'option');
+      btn.setAttribute('data-value', opt.value);
+      btn.textContent = label;
+      if (opt.value === select.value) btn.setAttribute('aria-selected', 'true');
+      btn.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        select.value = opt.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        const input = wrap.querySelector('[data-search-input]');
+        if (input) input.value = label;
+        list.hidden = true;
+      });
+      list.appendChild(btn);
+      shown++;
+    });
+    if (!shown) {
+      const empty = document.createElement('div');
+      empty.className = 'searchable-empty muted';
+      empty.textContent = q ? 'No matches.' : 'No options available.';
+      list.appendChild(empty);
+    }
+    list.hidden = false;
+  }
+
+  function initSearchableSelects(root) {
+    $all('select[data-searchable]', root || document).forEach(function (select) {
+      if (select.dataset.searchReady === '1') return;
+      select.dataset.searchReady = '1';
+      const label = select.closest('label') || select.parentElement;
+      if (!label) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'searchable-select';
+      wrap.setAttribute('data-searchable-wrap', '1');
+      select.parentNode.insertBefore(wrap, select);
+      wrap.appendChild(select);
+      select.classList.add('searchable-select-native');
+      select.setAttribute('tabindex', '-1');
+      select.setAttribute('aria-hidden', 'true');
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'searchable-select-input';
+      input.setAttribute('data-search-input', '1');
+      input.setAttribute('role', 'combobox');
+      input.setAttribute('aria-autocomplete', 'list');
+      input.setAttribute('autocomplete', 'off');
+      input.setAttribute('spellcheck', 'false');
+      input.placeholder = select.options[0] && !select.options[0].value
+        ? (select.options[0].textContent || 'Select…')
+        : 'Type to search…';
+      if (select.required) input.setAttribute('aria-required', 'true');
+      wrap.insertBefore(input, select);
+
+      const list = document.createElement('div');
+      list.className = 'searchable-select-list';
+      list.setAttribute('data-search-list', '1');
+      list.setAttribute('role', 'listbox');
+      list.hidden = true;
+      wrap.appendChild(list);
+
+      function syncFromSelect() {
+        const opt = select.options[select.selectedIndex];
+        input.value = opt && opt.value ? (opt.textContent || '').trim() : '';
+      }
+      syncFromSelect();
+
+      input.addEventListener('focus', function () {
+        rebuildSearchList(wrap, select, input.value);
+      });
+      input.addEventListener('input', function () {
+        // Typing clears selection until a match is chosen
+        if (select.value) {
+          select.value = '';
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        rebuildSearchList(wrap, select, input.value);
+      });
+      input.addEventListener('keydown', function (e) {
+        const options = $all('.searchable-option', list);
+        const current = list.querySelector('.searchable-option.is-active');
+        let idx = current ? options.indexOf(current) : -1;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          list.hidden = false;
+          if (!options.length) rebuildSearchList(wrap, select, input.value);
+          const next = $all('.searchable-option', list);
+          if (!next.length) return;
+          if (current) current.classList.remove('is-active');
+          idx = Math.min(idx + 1, next.length - 1);
+          next[idx].classList.add('is-active');
+          next[idx].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (!options.length) return;
+          if (current) current.classList.remove('is-active');
+          idx = Math.max(idx - 1, 0);
+          options[idx].classList.add('is-active');
+          options[idx].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Enter') {
+          if (current) {
+            e.preventDefault();
+            current.dispatchEvent(new Event('mousedown'));
+          }
+        } else if (e.key === 'Escape') {
+          list.hidden = true;
+          syncFromSelect();
+        }
+      });
+      input.addEventListener('blur', function () {
+        setTimeout(function () {
+          list.hidden = true;
+          // Restore label if a value is selected; otherwise match typed label to an option
+          if (select.value) {
+            syncFromSelect();
+            return;
+          }
+          const typed = input.value.trim().toLowerCase();
+          if (!typed) return;
+          const match = $all('option', select).find(function (o) {
+            return o.value && (o.textContent || '').trim().toLowerCase() === typed;
+          });
+          if (match) {
+            select.value = match.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            syncFromSelect();
+          } else {
+            input.value = '';
+          }
+        }, 150);
+      });
+      select.addEventListener('change', syncFromSelect);
+      // Expose refresh for dependent field reloads
+      select._searchableSync = syncFromSelect;
+      select._searchableRebuild = function () {
+        rebuildSearchList(wrap, select, input.value);
+        syncFromSelect();
+      };
+    });
+    document.addEventListener('click', function (e) {
+      $all('[data-searchable-wrap]').forEach(function (wrap) {
+        if (!wrap.contains(e.target)) {
+          const list = wrap.querySelector('[data-search-list]');
+          if (list) list.hidden = true;
+        }
+      });
+    });
+  }
+
   /* ---------- Dependent selects ---------- */
   function initDependentSelects(root) {
     $all('select[data-depends-on]', root || document).forEach(function (child) {
@@ -266,28 +428,177 @@
       const parent = form.querySelector('[name="' + parentName + '"]');
       if (!parent) return;
 
-      const allOptions = $all('option', child).map(function (opt) {
-        return { el: opt, parent: opt.getAttribute(parentAttr) || '', value: opt.value };
+      let optionCache = $all('option', child).map(function (opt) {
+        return {
+          value: opt.value,
+          label: (opt.textContent || '').trim(),
+          parent: opt.getAttribute(parentAttr) || opt.getAttribute('data-farm') || opt.getAttribute('data-parent') || '',
+          selected: opt.selected
+        };
       });
 
-      function filter() {
+      function fieldsHint() {
+        const label = child.closest('label');
+        return label ? label.querySelector('[data-fields-empty-hint]') : null;
+      }
+
+      function updateEmptyHint(visibleCount) {
+        const hint = fieldsHint();
+        if (!hint) return;
         const pid = String(parent.value || '');
-        let keepValue = false;
-        allOptions.forEach(function (item) {
-          if (!item.value) {
-            item.el.hidden = false;
-            item.el.disabled = false;
+        // Only show the empty warning when a farm is chosen and the list is truly empty.
+        // Never show it when the user already has a selected field value.
+        if (child.value || visibleCount > 0 || !pid) {
+          hint.hidden = true;
+          hint.setAttribute('hidden', 'hidden');
+        } else {
+          hint.hidden = false;
+          hint.removeAttribute('hidden');
+        }
+      }
+
+      function ensureFarmSelected() {
+        if (parent.value) return String(parent.value);
+        const farmOpts = $all('option', parent).filter(function (o) { return !!o.value; });
+        if (farmOpts.length === 1) {
+          parent.value = farmOpts[0].value;
+          if (typeof parent._searchableSync === 'function') parent._searchableSync();
+          return String(parent.value);
+        }
+        // Match typed farm label (searchable input may show name while value is empty)
+        const farmWrap = parent.closest('[data-searchable-wrap]');
+        const farmInput = farmWrap ? farmWrap.querySelector('[data-search-input]') : null;
+        const typed = farmInput ? farmInput.value.trim().toLowerCase() : '';
+        if (typed) {
+          const match = farmOpts.find(function (o) {
+            return (o.textContent || '').trim().toLowerCase() === typed;
+          });
+          if (match) {
+            parent.value = match.value;
+            if (typeof parent._searchableSync === 'function') parent._searchableSync();
+            return String(parent.value);
+          }
+        }
+        return '';
+      }
+
+      function applyFieldLabelMatch() {
+        if (child.value) return;
+        const wrap = child.closest('[data-searchable-wrap]');
+        const input = wrap ? wrap.querySelector('[data-search-input]') : null;
+        const typed = input ? input.value.trim().toLowerCase() : '';
+        if (!typed) return;
+        const match = $all('option', child).find(function (o) {
+          return o.value && (o.textContent || '').trim().toLowerCase() === typed;
+        });
+        if (match) {
+          child.value = match.value;
+          if (typeof child._searchableSync === 'function') child._searchableSync();
+        }
+      }
+
+      function renderOptions(pid) {
+        const selected = child.value;
+        const placeholder = optionCache.find(function (o) { return !o.value; });
+        child.innerHTML = '';
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = placeholder ? placeholder.label : 'Select…';
+        child.appendChild(empty);
+        let visible = 0;
+        let keep = false;
+        optionCache.forEach(function (item) {
+          if (!item.value) return;
+          const match = !pid || !item.parent || String(item.parent) === String(pid);
+          if (!match) return;
+          const opt = document.createElement('option');
+          opt.value = item.value;
+          opt.textContent = item.label;
+          if (item.parent) {
+            opt.setAttribute(parentAttr, item.parent);
+            opt.setAttribute('data-farm', item.parent);
+            opt.setAttribute('data-parent', item.parent);
+          }
+          if (String(item.value) === String(selected)) {
+            opt.selected = true;
+            keep = true;
+          }
+          child.appendChild(opt);
+          visible++;
+        });
+        if (!keep) child.value = '';
+        applyFieldLabelMatch();
+        updateEmptyHint(visible);
+        if (typeof child._searchableRebuild === 'function') child._searchableRebuild();
+        else if (typeof child._searchableSync === 'function') child._searchableSync();
+        return visible;
+      }
+
+      function filter() {
+        renderOptions(String(parent.value || ''));
+      }
+
+      async function refreshFieldsFromServer() {
+        if (child.getAttribute('data-fields-select') !== '1') {
+          filter();
+          return;
+        }
+        const urlBase = child.getAttribute('data-fields-url');
+        const farmId = ensureFarmSelected();
+        if (!urlBase) {
+          filter();
+          return;
+        }
+        if (!farmId) {
+          // Keep any server-rendered field options; just hide the false empty warning.
+          updateEmptyHint(optionCache.filter(function (o) { return !!o.value; }).length);
+          return;
+        }
+        try {
+          const res = await fetch(urlBase + (urlBase.indexOf('?') >= 0 ? '&' : '?') + 'farm_id=' + encodeURIComponent(farmId), {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+          });
+          const json = await res.json();
+          if (!json || !json.ok || !Array.isArray(json.fields)) {
+            filter();
             return;
           }
-          const match = !pid || !item.parent || item.parent === pid;
-          item.el.hidden = !match;
-          item.el.disabled = !match;
-          if (match && item.value === child.value) keepValue = true;
-        });
-        if (!keepValue) child.value = '';
+          const selected = child.value;
+          optionCache = [{ value: '', label: 'Select…', parent: '', selected: false }].concat(
+            json.fields.map(function (f) {
+              return {
+                value: String(f.id),
+                label: String(f.name || ('Field #' + f.id)),
+                parent: String(f.farm_id || farmId),
+                selected: String(f.id) === String(selected)
+              };
+            })
+          );
+          renderOptions(farmId);
+        } catch (e) {
+          filter();
+        }
       }
-      parent.addEventListener('change', filter);
-      filter();
+
+      parent.addEventListener('change', function () {
+        if (child.getAttribute('data-fields-select') === '1' && parentName === 'farm_id') {
+          refreshFieldsFromServer();
+        } else {
+          filter();
+        }
+      });
+      child.addEventListener('change', function () {
+        updateEmptyHint($all('option', child).filter(function (o) { return !!o.value; }).length);
+      });
+
+      // Initial load
+      if (child.getAttribute('data-fields-select') === '1' && parentName === 'farm_id') {
+        ensureFarmSelected();
+        refreshFieldsFromServer();
+      } else {
+        filter();
+      }
     });
   }
 
@@ -358,6 +669,44 @@
     }
   }
 
+  function markFormBusy(form) {
+    const btn = form.querySelector('button[type="submit"], button:not([type])');
+    if (!btn || btn.dataset.busy === '1') return;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.classList.add('is-busy');
+    const action = form.getAttribute('action') || '';
+    const original = btn.textContent;
+    const customBusy = (btn.getAttribute('data-busy-label') || '').trim();
+    const label = customBusy
+      || (action.indexOf('/delete/') !== -1
+        ? 'Deleting…'
+        : (action.indexOf('/approve') !== -1 ? 'Approving…' : (action.indexOf('/reject') !== -1 ? 'Rejecting…' : 'Saving…')));
+    btn.textContent = label;
+    const row = form.closest('tr');
+    if (row && action.indexOf('/delete/') !== -1) row.classList.add('is-leaving');
+    // If the server hangs (e.g. cold DB), unlock so the user can retry
+    setTimeout(function () {
+      if (!btn.isConnected || btn.dataset.busy !== '1') return;
+      btn.dataset.busy = '0';
+      btn.disabled = false;
+      btn.classList.remove('is-busy');
+      btn.textContent = original || 'Save';
+      if (global.IFMS && IFMS.toast) {
+        IFMS.toast('Save is taking too long. Check your connection and try again.', 'error');
+      }
+    }, 12000);
+  }
+
+  function initBusyForms() {
+    document.addEventListener('submit', function (event) {
+      const form = event.target;
+      if (!form || !form.getAttribute || form.dataset.uiConfirmed === 'pending') return;
+      if (form.hasAttribute('data-confirm') && form.dataset.uiConfirmed !== '1') return;
+      markFormBusy(form);
+    }, true);
+  }
+
   function initConfirmForms() {
     $all('form[data-confirm]').forEach(function (form) {
       form.addEventListener('submit', function (e) {
@@ -367,6 +716,7 @@
         confirm(msg).then(function (ok) {
           if (!ok) return;
           form.dataset.uiConfirmed = '1';
+          markFormBusy(form);
           HTMLFormElement.prototype.submit.call(form);
         });
       });
@@ -485,18 +835,36 @@
     });
   }
 
+  function copyText(text) {
+    text = String(text || '').trim();
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast('Copied', 'ok'); }).catch(function () {
+        toast(text, 'info');
+      });
+      return;
+    }
+    toast(text, 'info');
+  }
+
   function initCopyButtons() {
     $all('[data-copy]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         const host = btn.closest('dd, td, div') || btn.parentElement;
         const el = host && host.querySelector('[data-copy-text]');
         const text = el ? el.getAttribute('data-copy-text') || el.textContent : '';
-        if (!text) return;
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(function () { toast('Copied', 'ok'); });
-        } else {
-          toast(text, 'info');
-        }
+        copyText(text);
+      });
+    });
+    // Elements that carry the text themselves (credential chips / Copy all)
+    $all('[data-copy-text]').forEach(function (el) {
+      if (el.matches('[data-copy]')) return;
+      el.style.cursor = el.tagName === 'BUTTON' || el.tagName === 'A' ? '' : 'pointer';
+      el.title = el.title || 'Click to copy';
+      el.addEventListener('click', function (e) {
+        if (el.tagName === 'A') return;
+        e.preventDefault();
+        copyText(el.getAttribute('data-copy-text') || el.textContent);
       });
     });
   }
@@ -551,14 +919,28 @@
     });
   }
 
+  function initNavigationFeedback() {
+    document.addEventListener('click', function (event) {
+      const link = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+      if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (link.target && link.target !== '_self') return;
+      const href = link.getAttribute('href') || '';
+      if (href === '' || href.charAt(0) === '#' || href.indexOf('javascript:') === 0) return;
+      document.body.classList.add('is-navigating');
+    }, true);
+  }
+
   function init() {
+    initNavigationFeedback();
     promoteFlashBanners();
     initTabs();
     initCollapsibleNav();
+    initSearchableSelects();
     initDependentSelects();
     initQueryPreselect();
     initAccountMenu();
     initMobileNav();
+    initBusyForms();
     initConfirmForms();
     initNextSteps();
     initInventoryPicker();
@@ -576,6 +958,7 @@
     confirm: confirm,
     initTabs: initTabs,
     initDependentSelects: initDependentSelects,
+    initSearchableSelects: initSearchableSelects,
     initQueryPreselect: initQueryPreselect,
     init: init
   };

@@ -4,7 +4,7 @@ class DocumentService
 {
     public static function isDocument(string $module): bool
     {
-        return in_array($module, ['invoices', 'quotations', 'purchase_orders'], true);
+        return in_array($module, ['invoices', 'quotations', 'purchase_orders', 'payroll'], true);
     }
 
     public static function payload(string $module, array $row): array
@@ -12,23 +12,65 @@ class DocumentService
         $farm = !empty($row['farm_id']) ? db()->find('farms', $row['farm_id']) : null;
         $doc = [
             'module' => $module,
-            'title' => ['invoices' => 'Invoice', 'quotations' => 'Quotation', 'purchase_orders' => 'Purchase Order'][$module] ?? 'Document',
-            'number' => $row['invoice_number'] ?? $row['quote_number'] ?? $row['po_number'] ?? ('#' . $row['id']),
+            'title' => ['invoices' => 'Invoice', 'quotations' => 'Quotation', 'purchase_orders' => 'Purchase Order', 'payroll' => 'Pay Slip'][$module] ?? 'Document',
+            'number' => $row['invoice_number'] ?? $row['quote_number'] ?? $row['po_number'] ?? ($module === 'payroll' ? ('PS-' . $row['id']) : ('#' . $row['id'])),
             'farm' => $farm,
-            'party_label' => $module === 'invoices' ? 'Bill to' : 'Supplier',
+            'party_label' => $module === 'invoices' ? 'Bill to' : ($module === 'payroll' ? 'Employee' : 'Supplier'),
             'party' => null,
-            'issue_date' => $row['invoice_date'] ?? $row['quote_date'] ?? $row['order_date'] ?? null,
-            'due_date' => $row['due_date'] ?? $row['valid_until'] ?? null,
+            'issue_date' => $row['invoice_date'] ?? $row['quote_date'] ?? $row['order_date'] ?? $row['paid_date'] ?? $row['period_end'] ?? null,
+            'due_date' => $row['due_date'] ?? $row['valid_until'] ?? $row['period_end'] ?? null,
             'status' => $row['status'] ?? '',
             'payment_status' => $row['payment_status'] ?? '',
-            'notes' => $row['notes'] ?? '',
+            'notes' => $row['notes'] ?? $row['calculation_note'] ?? '',
             'items' => [],
             'subtotal' => 0.0,
             'total' => 0.0,
             'payments' => [],
             'paid' => 0.0,
             'balance' => 0.0,
+            'period_start' => $row['period_start'] ?? null,
+            'period_end' => $row['period_end'] ?? null,
+            'days_worked' => $row['days_worked'] ?? null,
+            'deductions' => $row['deductions'] ?? null,
+            'gross_pay' => $row['gross_pay'] ?? null,
+            'net_pay' => $row['net_pay'] ?? null,
         ];
+
+        if ($module === 'payroll') {
+            $employee = db()->find('employees', $row['employee_id'] ?? 0);
+            $doc['party'] = [
+                'name' => $employee['name'] ?? '—',
+                'contact_person' => $employee['role_title'] ?? '',
+                'phone' => $employee['phone'] ?? '',
+                'email' => $employee['email'] ?? '',
+                'address' => '',
+            ];
+            $days = (float) ($row['days_worked'] ?? 0);
+            $gross = (float) ($row['gross_pay'] ?? 0);
+            $deductions = (float) ($row['deductions'] ?? 0);
+            $net = (float) ($row['net_pay'] ?? ($gross - $deductions));
+            $rate = $days > 0 ? round($gross / $days, 2) : (float) ($employee['daily_rate'] ?? 0);
+            $doc['items'][] = [
+                'description' => 'Wages ' . dater($row['period_start'] ?? null) . ' – ' . dater($row['period_end'] ?? null)
+                    . ($days > 0 ? ' · ' . $days . ' day(s)' : ''),
+                'quantity' => $days > 0 ? $days : 1,
+                'unit_price' => $rate,
+                'total' => $gross,
+            ];
+            if ($deductions > 0) {
+                $doc['items'][] = [
+                    'description' => 'Deductions',
+                    'quantity' => 1,
+                    'unit_price' => -$deductions,
+                    'total' => -$deductions,
+                ];
+            }
+            $doc['subtotal'] = $gross;
+            $doc['total'] = $net;
+            $doc['paid'] = ((string) ($row['status'] ?? '') === 'paid') ? $net : 0.0;
+            $doc['balance'] = round($net - $doc['paid'], 2);
+            return $doc;
+        }
 
         if ($module === 'invoices') {
             $doc['party'] = db()->find('customers', $row['customer_id'] ?? 0);

@@ -65,7 +65,8 @@ Auth::clearCache();
 unset($_SESSION['user_id'], $_SESSION['session_version']);
 
 echo "5) login as worker...\n";
-$login = Auth::attemptLogin($email, 'Worker#Test26');
+$farmRow = $farmId ? db()->find('farms', $farmId) : null;
+$login = Auth::attemptLogin($email, 'Worker#Test26', false, (string) ($farmRow['join_code'] ?? ''));
 echo '   ok=' . (!empty($login['ok']) ? '1' : '0') . ' role=' . Auth::role() . PHP_EOL;
 echo '   can_transactions=' . (Auth::can('transactions', 'view') ? '1' : '0') . PHP_EOL;
 echo '   can_users_admin=' . (Auth::can('users', 'edit') ? '1' : '0') . PHP_EOL;

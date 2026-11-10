@@ -20,6 +20,13 @@
       { label: 'Add irrigation system', module: 'irrigation_systems', params: { field_id: ':id' } },
       { label: 'Open on map', href: 'map' }
     ],
+    land_use_plans: [
+      { label: 'View crops on this field', href: 'module/plantings?field_id=:field_id' },
+      { label: 'View all plantings', href: 'module/plantings?farm_id=:farm_id' },
+      { label: 'View all crops', href: 'module/crop_varieties' },
+      { label: 'Add planting for this field', module: 'plantings', params: { field_id: ':field_id', farm_id: ':farm_id' } },
+      { label: 'Add crop variety', module: 'crop_varieties', params: { farm_id: ':farm_id' } }
+    ],
     crop_varieties: [
       { label: 'Add planting', module: 'plantings', params: { crop_variety_id: ':id' } }
     ],
@@ -131,7 +138,12 @@
   function buildUrl(chip, record) {
     const base = (global.IFMS_BASE || '').replace(/\/$/, '');
     if (chip.href) {
-      return base + '/' + String(chip.href).replace(/^\//, '');
+      let href = String(chip.href).replace(/^\//, '');
+      href = href.replace(/:([a-z0-9_]+)/gi, function (_, key) {
+        const val = record && record[key] != null ? record[key] : '';
+        return encodeURIComponent(String(val));
+      });
+      return base + '/' + href;
     }
     if (!chip.module) return null;
     const action = chip.action === 'view' || chip.action === 'edit' ? chip.action : 'create';

@@ -1,4 +1,10 @@
-<?php $user = $user ?? fe_user(); $farm = $farm ?? null; ?>
+<?php $user = $user ?? fe_user(); $farm = $farm ?? null; $mustChange = !empty($user['must_change_password']); ?>
+<?php if ($mustChange): ?>
+<section class="panel panel-alert">
+    <header><h3>Password change required</h3></header>
+    <p>Your account was issued a temporary password. Set a new password below before using FarmWise.</p>
+</section>
+<?php endif; ?>
 <section class="panel">
     <header><h3>My Profile</h3></header>
     <form class="stack-form" method="post" action="<?= e(url('profile')) ?>" data-validate-form novalidate>
@@ -27,12 +33,12 @@
     </form>
 </section>
 
-<section class="panel">
-    <header><h3>Change password</h3></header>
+<section class="panel<?= $mustChange ? ' panel-priority' : '' ?>">
+    <header><h3><?= $mustChange ? 'Set your new password' : 'Change password' ?></h3></header>
     <form class="stack-form" method="post" action="<?= e(url('profile/password')) ?>">
         <?= fe_csrf_field() ?>
         <div class="form-grid">
-            <label class="wide">Current password
+            <label class="wide">Current / temporary password
                 <?= password_input(['name' => 'current_password', 'id' => 'current_password', 'required' => true, 'autocomplete' => 'current-password']) ?>
             </label>
             <label class="wide">New password

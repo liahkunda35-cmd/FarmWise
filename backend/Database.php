@@ -5,6 +5,8 @@ class Database
     private static ?Database $instance = null;
     private ?PDO $pdo;
     private string $driver;
+    private ?array $tableNames = null;
+    private bool $reconnecting = false;
 
     public function __construct(PDO $pdo, string $driver)
     {
@@ -106,6 +108,16 @@ class Database
             }
         }
 
+        // Local Neon TLS proxy (127.0.0.1): XAMPP libpq cannot speak modern TLS to neon.tech.
+        // If a localhost target exists, never fall through to remote Neon hosts (those hang).
+        $localTargets = array_values(array_filter(
+            $targets,
+            static fn (array $t) => in_array($t['host'], ['127.0.0.1', 'localhost'], true)
+        ));
+        if ($localTargets) {
+            $targets = $localTargets;
+        }
+
         if (!$targets) {
             $p = $cfg['pgsql'] ?? [];
             $host = (string) ($p['host'] ?? '127.0.0.1');
@@ -121,8 +133,12 @@ class Database
             }
         }
 
-        // Prefer Neon pooler hosts first (works with endpoint option on older libpq)
-        usort($targets, static function (array $a, array $b): int {
+        $preferred = @file_get_contents(dirname(__DIR__) . '/storage/.db_host');
+        $preferred = is_string($preferred) ? trim($preferred) : '';
+        usort($targets, static function (array $a, array $b) use ($preferred): int {
+            if ($preferred !== '') {
+                return ($a['host'] === $preferred ? 0 : 1) <=> ($b['host'] === $preferred ? 0 : 1);
+            }
             $ap = str_contains($a['host'], '-pooler.') ? 0 : 1;
             $bp = str_contains($b['host'], '-pooler.') ? 0 : 1;
             return $ap <=> $bp;
@@ -145,35 +161,59 @@ class Database
             throw new RuntimeException('No Postgres connection settings found. Set DATABASE_URL or PGHOST.');
         }
 
+        // Non-persistent: Neon serverless + PHP built-in server hang less with fresh connections.
         $options = [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => true,
-            PDO::ATTR_TIMEOUT => 20,
+            PDO::ATTR_TIMEOUT => 10,
+            PDO::ATTR_PERSISTENT => false,
         ];
 
         $last = null;
-        for ($attempt = 1; $attempt <= 6; $attempt++) {
-            foreach ($targets as $t) {
+        // Prefer the last known-good host first (avoids multi-host timeouts on every request).
+        $ordered = $targets;
+        if ($preferred !== '') {
+            usort($ordered, static function (array $a, array $b) use ($preferred): int {
+                return ($a['host'] === $preferred ? 0 : 1) <=> ($b['host'] === $preferred ? 0 : 1);
+            });
+        }
+
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            // Attempt 1: preferred host (fast path). Later attempts: all hosts for cold wake / failover.
+            $batch = ($attempt === 1 && $preferred !== '')
+                ? array_values(array_filter($ordered, static fn (array $t) => $t['host'] === $preferred))
+                : $ordered;
+            if (!$batch) {
+                $batch = $ordered;
+            }
+            foreach ($batch as $t) {
                 // channel_binding is not a PDO DSN option — omit it
-                $dsn = sprintf(
-                    'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s',
+                $dsnBase = sprintf(
+                    'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s;connect_timeout=8',
                     $t['host'],
                     $t['port'],
                     $t['dbname'],
                     $t['sslmode']
                 );
                 $endpoint = self::neonEndpointId($t['host']);
-                // Neon pooler without SNI (common on Windows/XAMPP libpq) requires endpoint=
+                // XAMPP libpq often lacks SNI — try with endpoint= first, then without.
+                $dsns = [];
                 if ($endpoint) {
-                    $dsn .= ";options='endpoint=" . $endpoint . "'";
+                    $dsns[] = $dsnBase . ";options='endpoint=" . $endpoint . "'";
                 }
-                try {
-                    $pdo = new PDO($dsn, $t['user'], $t['pass'], $options);
-                    $pdo->query('SELECT 1');
-                    return $pdo;
-                } catch (PDOException $e) {
-                    $last = $e;
+                $dsns[] = $dsnBase;
+                foreach ($dsns as $dsn) {
+                    try {
+                        $pdo = new PDO($dsn, $t['user'], $t['pass'], $options);
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        @file_put_contents(dirname(__DIR__) . '/storage/.db_host', $t['host']);
+                        return $pdo;
+                    } catch (PDOException $e) {
+                        $last = $e;
+                    }
                 }
             }
             $msg = strtolower($last ? $last->getMessage() : '');
@@ -185,11 +225,12 @@ class Database
                 || str_contains($msg, 'timeout expired')
                 || str_contains($msg, 'remaining connection slots')
                 || str_contains($msg, 'the database system is starting')
-                || str_contains($msg, 'endpoint id is not specified');
-            if (!$transient || $attempt >= 6) {
+                || str_contains($msg, 'endpoint id is not specified')
+                || str_contains($msg, '08006');
+            if (!$transient || $attempt >= 3) {
                 break;
             }
-            usleep(1000000 * $attempt);
+            usleep(400000 * $attempt);
         }
         throw $last ?? new RuntimeException('Could not connect to Postgres.');
     }
@@ -265,9 +306,33 @@ class Database
 
     public function query(string $sql, array $params = []): PDOStatement
     {
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute(array_values($params));
-        return $stmt;
+        try {
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute(array_values($params));
+            return $stmt;
+        } catch (PDOException $e) {
+            if ($this->reconnecting || !$this->connectionLost($e)) {
+                throw $e;
+            }
+            $this->reconnecting = true;
+            $this->tableNames = null;
+            $this->pdo = self::connectPostgres(config());
+            $this->reconnecting = false;
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute(array_values($params));
+            return $stmt;
+        }
+    }
+
+    private function connectionLost(PDOException $e): bool
+    {
+        $msg = strtolower($e->getMessage());
+        return str_contains($msg, 'closed the connection')
+            || str_contains($msg, 'server closed')
+            || str_contains($msg, 'could not connect')
+            || str_contains($msg, 'connection timed out')
+            || str_contains($msg, 'no connection to the server')
+            || str_contains($msg, 'ssl connection has been closed');
     }
 
     public function select(string $sql, array $params = []): array
@@ -296,9 +361,11 @@ class Database
         if ($this->driver === 'pgsql') {
             $sql .= ' RETURNING id';
             $row = $this->query($sql, array_values($data))->fetch(PDO::FETCH_ASSOC);
+            session_memo_flush();
             return (int) ($row['id'] ?? 0);
         }
         $this->query($sql, array_values($data));
+        session_memo_flush();
         return (int) $this->pdo->lastInsertId();
     }
 
@@ -312,11 +379,13 @@ class Database
         $params = array_values($data);
         $params[] = $id;
         $this->query('UPDATE ' . $table . ' SET ' . implode(', ', $sets) . ' WHERE id = ?', $params);
+        session_memo_flush();
     }
 
     public function delete(string $table, $id): void
     {
         $this->query('DELETE FROM ' . $table . ' WHERE id = ?', [$id]);
+        session_memo_flush();
     }
 
     public function find(string $table, $id): ?array
@@ -331,16 +400,19 @@ class Database
 
     public function tables(): array
     {
+        if ($this->tableNames !== null) {
+            return $this->tableNames;
+        }
         if ($this->driver === 'pgsql') {
             $rows = $this->select("SELECT tablename AS name FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename");
-            return array_column($rows, 'name');
+            return $this->tableNames = array_column($rows, 'name');
         }
         if ($this->driver === 'mysql') {
             $rows = $this->select('SHOW TABLES');
-            return array_map(fn($r) => array_values($r)[0], $rows);
+            return $this->tableNames = array_map(fn($r) => array_values($r)[0], $rows);
         }
         $rows = $this->select("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
-        return array_column($rows, 'name');
+        return $this->tableNames = array_column($rows, 'name');
     }
 
     public function now(): string

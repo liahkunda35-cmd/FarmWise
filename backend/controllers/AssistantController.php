@@ -126,6 +126,71 @@ class AssistantController
         ]);
     }
 
+    /** Read one finished reply aloud. Does not call the text assistant. */
+    public static function speak(): void
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+
+        if (!is_post()) {
+            self::json(405, ['ok' => false, 'error' => 'POST required.']);
+        }
+
+        $body = self::body();
+        $csrf = (string) (
+            $_SERVER['HTTP_X_CSRF_TOKEN']
+            ?? $_SERVER['HTTP_X_CSRF']
+            ?? ($body['_csrf'] ?? '')
+            ?? ($_POST['_csrf'] ?? '')
+        );
+        $expected = Csrf::token();
+        if ($csrf === '' || !hash_equals($expected, $csrf)) {
+            self::json(419, ['ok' => false, 'error' => 'Security token expired. Refresh the page and try again.']);
+        }
+
+        $lang = GeminiService::normalizeLanguage((string) ($body['language'] ?? $body['lang'] ?? 'en'));
+        if (!in_array($lang, GeminiService::SPEECH_LANGUAGES, true)) {
+            self::json(400, [
+                'ok' => false,
+                'error' => 'Spoken replies are not available for this language.',
+                'language' => $lang,
+            ]);
+        }
+
+        $text = trim((string) ($body['text'] ?? ''));
+        if ($text === '' || mb_strlen($text) > 8000) {
+            self::json(400, ['ok' => false, 'error' => 'That reply cannot be read aloud.']);
+        }
+
+        $rate = GeminiService::checkSpeechRateLimit();
+        if ($rate !== null) {
+            self::json(429, ['ok' => false, 'error' => $rate]);
+        }
+
+        try {
+            $result = GeminiService::speak($text, $lang);
+        } catch (Throwable $e) {
+            GeminiService::logSafe('assistant_speech', get_class($e));
+            self::json(500, ['ok' => false, 'error' => 'The reply could not be read aloud.']);
+        }
+
+        if (empty($result['ok'])) {
+            self::json(503, [
+                'ok' => false,
+                'error' => (string) ($result['error'] ?? 'The reply could not be read aloud.'),
+                'language' => $lang,
+            ]);
+        }
+
+        self::json(200, [
+            'ok' => true,
+            'mime' => (string) ($result['mime'] ?? 'audio/wav'),
+            'audio' => (string) ($result['audio'] ?? ''),
+            'truncated' => !empty($result['truncated']),
+            'language' => $lang,
+        ]);
+    }
+
     /** Persist preferred assistant language for signed-in users. */
     private static function persistLanguagePreference(string $lang): void
     {

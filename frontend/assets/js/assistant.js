@@ -11,7 +11,7 @@
   var firstName = (root.getAttribute('data-first-name') || '').trim();
   var userId = (root.getAttribute('data-user-id') || '').trim();
   var aiConfigured = root.getAttribute('data-ai-configured') === '1';
-  var REQUEST_TIMEOUT_MS = 55000;
+  var REQUEST_TIMEOUT_MS = 40000;
 
   var fab = document.getElementById('fw-ai-fab');
   var panel = document.getElementById('fw-ai-panel');
@@ -38,7 +38,7 @@
 
   function normalizeLang(code) {
     code = String(code || 'en').toLowerCase();
-    var allowed = ['en', 'bem', 'nya', 'toi', 'loz', 'lue', 'kqn'];
+    var allowed = ['en', 'bem', 'nya', 'toi'];
     return allowed.indexOf(code) >= 0 ? code : 'en';
   }
 
@@ -48,6 +48,7 @@
   try {
     var storedLang = localStorage.getItem(LANG_KEY);
     if (storedLang) language = normalizeLang(storedLang);
+    if (storedLang && storedLang !== language) persistLang();
   } catch (e) { /* ignore */ }
   if (langSelect) langSelect.value = language;
 
@@ -171,6 +172,7 @@
   }
 
   function closePanel() {
+    stopSpeech();
     fab.setAttribute('aria-expanded', 'false');
     fab.setAttribute('aria-label', 'Open FarmWise AI Assistant');
     panel.classList.remove('is-open');
@@ -192,10 +194,172 @@
     else closePanel();
   }
 
-  function addBubble(role, text, extraClass) {
+  var speakEndpoint = endpoint.replace(/\/chat\/?$/, '/speak');
+  var SPEAK_LANGS = ['en', 'bem', 'nya'];
+  var speech = { busy: false, button: null, ctx: null, source: null, abort: null };
+
+  function canSpeak(lang) {
+    return SPEAK_LANGS.indexOf(String(lang || '').toLowerCase()) >= 0;
+  }
+
+  function stopSpeech() {
+    if (speech.abort) {
+      try { speech.abort.abort(); } catch (e) { /* ignore */ }
+      speech.abort = null;
+    }
+    if (speech.source) {
+      var src = speech.source;
+      speech.source = null;
+      try { src.onended = null; src.stop(0); } catch (e) { /* ignore */ }
+    }
+    if (speech.button) {
+      speech.button.classList.remove('is-loading', 'is-playing', 'is-error');
+      speech.button.setAttribute('aria-pressed', 'false');
+      speech.button.setAttribute('aria-label', 'Listen');
+      setSpeakIcon(speech.button, 'listen');
+      speech.button = null;
+    }
+    speech.busy = false;
+  }
+
+  function setSpeakIcon(btn, mode) {
+    var svg = mode === 'stop'
+      ? '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"></rect></svg>'
+      : '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4z" fill="currentColor"></path><path d="M16.5 8.5a5 5 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path></svg>';
+    btn.innerHTML = svg;
+  }
+
+  function makeSpeakButton(text, lang) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'fw-ai-speak';
+    btn.setAttribute('aria-label', 'Listen');
+    btn.setAttribute('aria-pressed', 'false');
+    setSpeakIcon(btn, 'listen');
+    btn.addEventListener('click', function () {
+      toggleSpeech(btn, text, lang);
+    });
+    return btn;
+  }
+
+  function refreshSpeakButton(bubble, text, lang) {
+    var old = bubble.querySelector('.fw-ai-speak');
+    if (old && speech.button === old) stopSpeech();
+    if (old) old.remove();
+    bubble.classList.remove('has-speech');
+    if (!canSpeak(lang)) return;
+    bubble.classList.add('has-speech');
+    bubble.appendChild(makeSpeakButton(text, lang));
+  }
+
+  function unlockAudio() {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!speech.ctx) speech.ctx = new AC();
+    if (speech.ctx.state === 'suspended') {
+      speech.ctx.resume();
+    }
+    return speech.ctx;
+  }
+
+  function toggleSpeech(btn, text, lang) {
+    if (speech.busy) {
+      if (speech.button === btn) stopSpeech();
+      return;
+    }
+    var ctx = unlockAudio();
+    if (!ctx) {
+      btn.classList.add('is-error');
+      btn.setAttribute('aria-label', 'Could not play this reply');
+      return;
+    }
+    speech.busy = true;
+    speech.button = btn;
+    btn.classList.add('is-loading');
+    btn.classList.remove('is-error', 'is-playing');
+    btn.setAttribute('aria-label', 'Preparing audio');
+    speech.abort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var transport = window.FarmWiseApi ? window.FarmWiseApi.send.bind(window.FarmWiseApi) : fetch;
+    transport(speakEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-CSRF-TOKEN': csrf,
+      },
+      credentials: 'same-origin',
+      signal: speech.abort ? speech.abort.signal : undefined,
+      body: JSON.stringify({
+        text: text,
+        language: lang,
+        _csrf: csrf,
+      }),
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        return { ok: res.ok, data: data || {} };
+      }).catch(function () {
+        return { ok: false, data: {} };
+      });
+    }).then(function (result) {
+      if (!speech.busy || speech.button !== btn) return;
+      if (!result.ok || !result.data.ok || !result.data.audio) {
+        btn.classList.remove('is-loading');
+        btn.classList.add('is-error');
+        btn.setAttribute('aria-label', (result.data && result.data.error) || 'Could not play this reply');
+        speech.busy = false;
+        speech.abort = null;
+        return;
+      }
+      var binary = atob(result.data.audio);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return ctx.decodeAudioData(bytes.buffer.slice(0)).then(function (buffer) {
+        if (!speech.busy || speech.button !== btn) return;
+        var source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        speech.source = source;
+        source.onended = function () {
+          if (speech.source !== source) return;
+          speech.source = null;
+          speech.busy = false;
+          btn.classList.remove('is-loading', 'is-playing');
+          btn.setAttribute('aria-pressed', 'false');
+          btn.setAttribute('aria-label', 'Listen');
+          setSpeakIcon(btn, 'listen');
+          speech.button = null;
+        };
+        source.start(0);
+        btn.classList.remove('is-loading');
+        btn.classList.add('is-playing');
+        btn.setAttribute('aria-pressed', 'true');
+        btn.setAttribute('aria-label', 'Stop');
+        setSpeakIcon(btn, 'stop');
+        speech.abort = null;
+      });
+    }).catch(function (e) {
+      if (e && e.name === 'AbortError') return;
+      if (speech.button !== btn) return;
+      btn.classList.remove('is-loading', 'is-playing');
+      btn.classList.add('is-error');
+      btn.setAttribute('aria-label', 'Could not play this reply');
+      speech.busy = false;
+      speech.source = null;
+      speech.abort = null;
+    });
+  }
+
+  function addBubble(role, text, extraClass, lang) {
     var div = document.createElement('div');
     div.className = 'fw-ai-bubble ' + role + (extraClass ? ' ' + extraClass : '');
-    div.textContent = text;
+    var body = document.createElement('div');
+    body.className = 'fw-ai-bubble-text';
+    body.textContent = text;
+    div.appendChild(body);
+    if (role === 'bot' && extraClass !== 'err' && canSpeak(lang)) {
+      div.classList.add('has-speech');
+      div.appendChild(makeSpeakButton(text, lang));
+    }
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
     return div;
@@ -265,10 +429,10 @@
     msgs.innerHTML = '';
     applyUiChrome();
     if (!wasGreeted() || history.length === 0) {
-      addBubble('bot', greetingText());
+      addBubble('bot', greetingText(), '', language);
       markGreeted();
     } else {
-      addBubble('bot', greetingText() + ' ' + (ui().welcome_back || ''));
+      addBubble('bot', greetingText() + ' ' + (ui().welcome_back || ''), '', language);
     }
     if (!aiConfigured) {
       addBubble(
@@ -278,10 +442,13 @@
       );
     }
     history.forEach(function (turn) {
-      addBubble(turn.role === 'model' ? 'bot' : 'user', turn.text);
+      var role = turn.role === 'model' ? 'bot' : 'user';
+      addBubble(role, turn.text, '', role === 'bot' ? (turn.lang || language) : '');
     });
+    // Default prompt chips stay hidden so they never cover the chat.
     if (suggestions) {
-      suggestions.hidden = history.length > 0;
+      suggestions.hidden = true;
+      suggestions.innerHTML = '';
     }
   }
 
@@ -351,8 +518,8 @@
         persist();
       } else {
         var reply = String(data.reply || '').trim() || 'I did not receive a reply.';
-        addBubble('bot', reply);
-        history.push({ role: 'model', text: reply });
+        addBubble('bot', reply, '', language);
+        history.push({ role: 'model', text: reply, lang: language });
         persist();
         lastFailedText = '';
       }
@@ -376,13 +543,17 @@
   }
 
   function startFresh() {
+    stopSpeech();
     history = [];
     persist();
     try {
       sessionStorage.removeItem(GREET_KEY);
     } catch (e) { /* ignore */ }
     renderHistory();
-    if (suggestions) suggestions.hidden = false;
+    if (suggestions) {
+      suggestions.hidden = true;
+      suggestions.innerHTML = '';
+    }
   }
 
   function onLanguageChange() {
@@ -393,7 +564,10 @@
     // Refresh greeting chrome only — do not wipe conversation history
     var first = msgs.querySelector('.fw-ai-bubble.bot');
     if (first && history.length === 0) {
-      first.textContent = greetingText();
+      var greet = greetingText();
+      var textEl = first.querySelector('.fw-ai-bubble-text');
+      if (textEl) textEl.textContent = greet;
+      refreshSpeakButton(first, greet, language);
     }
   }
 

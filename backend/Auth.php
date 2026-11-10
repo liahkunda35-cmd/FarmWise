@@ -51,12 +51,15 @@ class Auth
         if (($u['status'] ?? '') !== 'active') {
             return false;
         }
-        // Enforce role/status/farm changes issued by administrators
-        $sessionVer = (int) ($_SESSION['session_version'] ?? 0);
-        $dbVer = (int) ($u['session_version'] ?? 1);
-        if ($sessionVer > 0 && $sessionVer !== $dbVer) {
-            self::logout();
-            return false;
+        // Cookie sessions must match the database copy. A token or test override
+        // is already the current user row, so it is not compared with the browser session.
+        if (!self::$override) {
+            $sessionVer = (int) ($_SESSION['session_version'] ?? 0);
+            $dbVer = (int) ($u['session_version'] ?? 1);
+            if ($sessionVer > 0 && $sessionVer !== $dbVer) {
+                self::logout();
+                return false;
+            }
         }
         return true;
     }
@@ -78,13 +81,15 @@ class Auth
         if ($u && !empty($u['farm_id']) && self::canAccessFarm((int) $u['farm_id'])) {
             return (int) $u['farm_id'];
         }
-        // One authorised farm and no selection yet: use that farm.
+        // One authorised farm and no selection yet: use that farm (admins included).
         // Several farms and no selection: stay unset so lists do not span every farm.
-        if (!self::isAdmin()) {
-            $farms = self::accessibleFarms();
-            if (count($farms) === 1) {
-                return (int) $farms[0]['id'];
+        $farms = self::accessibleFarms();
+        if (count($farms) === 1) {
+            $only = (int) $farms[0]['id'];
+            if ($only > 0 && empty($_SESSION['active_farm_id'])) {
+                $_SESSION['active_farm_id'] = $only;
             }
+            return $only;
         }
         return null;
     }
@@ -100,6 +105,25 @@ class Auth
         if (!self::check() && !self::$override) {
             return [];
         }
+        if (!self::user()) {
+            return [];
+        }
+        $cacheKey = !self::$override && self::id() ? 'access-farms:' . self::id() : null;
+        if ($cacheKey) {
+            $cached = session_memo_get($cacheKey);
+            if (is_array($cached)) {
+                return $cached;
+            }
+        }
+        $rows = self::queryAccessibleFarms();
+        if ($cacheKey) {
+            session_memo_set($cacheKey, $rows, 25);
+        }
+        return $rows;
+    }
+
+    private static function queryAccessibleFarms(): array
+    {
         if (!self::user()) {
             return [];
         }
@@ -186,36 +210,114 @@ class Auth
         return count($matches) === 1 ? $matches[0] : null;
     }
 
-    /**
-     * @return array{ok:bool,error?:string,must_change_password?:bool}
-     */
-    public static function attemptLogin(string $identity, string $password, bool $remember = false): array
+    public static function userBelongsToFarm(array $user, int $farmId): bool
     {
+        if ($farmId <= 0) {
+            return false;
+        }
+        if ((int) ($user['farm_id'] ?? 0) === $farmId) {
+            return true;
+        }
+        if (table_exists('user_farms') && !empty($user['id'])) {
+            $row = db()->first('SELECT id FROM user_farms WHERE user_id = ? AND farm_id = ?', [(int) $user['id'], $farmId]);
+            if ($row) {
+                return true;
+            }
+        }
+        if (($user['role'] ?? '') === 'owner' && !empty($user['id'])) {
+            $owned = db()->first('SELECT id FROM farms WHERE id = ? AND owner_id = ?', [$farmId, (int) $user['id']]);
+            return (bool) $owned;
+        }
+        return false;
+    }
+
+    /**
+     * Sign-in uses the farm already assigned to the account.
+     * A farm code is not part of authentication.
+     * @return array{error:?string,farm_id:?int}
+     */
+    public static function farmLoginGate(array $user, string $farmCode = ''): array
+    {
+        unset($farmCode);
+        if (($user['role'] ?? '') === 'admin') {
+            return ['error' => null, 'farm_id' => null];
+        }
+        $farmId = (int) ($user['farm_id'] ?? 0);
+        return ['error' => null, 'farm_id' => $farmId > 0 ? $farmId : null];
+    }
+
+    /**
+     * Check credentials without opening a browser session.
+     * @return array{ok:bool,error?:string,user?:array,farm_id?:?int,must_change_password?:bool}
+     */
+    public static function authenticate(string $identity, string $password, string $farmCode = ''): array
+    {
+        $identity = trim($identity);
+        if (self::loginThrottled($identity)) {
+            return ['ok' => false, 'error' => 'Too many sign-in attempts. Please wait 15 minutes and try again.'];
+        }
         $user = self::findByLogin($identity);
         if (!$user) {
+            self::recordLoginFailure($identity);
             Audit::log('login_failed', 'auth', null, 'Unknown identity');
             return ['ok' => false, 'error' => 'Invalid username/email or password.'];
         }
         $status = (string) ($user['status'] ?? '');
         if ($status === 'pending') {
-            return ['ok' => false, 'error' => 'Your registration is still awaiting administrator approval.'];
+            self::recordLoginFailure($identity);
+            return ['ok' => false, 'error' => 'Your account is awaiting administrator approval.'];
         }
         if ($status === 'approved') {
+            self::recordLoginFailure($identity);
             return ['ok' => false, 'error' => 'Your account was approved. Open the activation link in your email to set your password before signing in.'];
         }
         if ($status === 'rejected') {
+            self::recordLoginFailure($identity);
             return ['ok' => false, 'error' => 'Your registration was not approved. Contact your administrator.'];
         }
         if ($status === 'suspended') {
+            self::recordLoginFailure($identity);
             return ['ok' => false, 'error' => 'Your account is suspended. Contact your administrator.'];
         }
         if ($status !== 'active') {
+            self::recordLoginFailure($identity);
             return ['ok' => false, 'error' => 'Invalid username/email or password.'];
         }
-        if (!password_verify($password, $user['password'])) {
+        if (!password_verify($password, (string) $user['password'])) {
+            self::recordLoginFailure($identity);
             Audit::log('login_failed', 'auth', (int) $user['id'], 'Bad password');
             return ['ok' => false, 'error' => 'Invalid username/email or password.'];
         }
+        if (!self::isKnownRole((string) ($user['role'] ?? ''))) {
+            self::recordLoginFailure($identity);
+            Audit::log('login_failed', 'auth', (int) $user['id'], 'Unrecognised role');
+            return ['ok' => false, 'error' => 'This account is not allowed to sign in.'];
+        }
+        $gate = self::farmLoginGate($user, $farmCode);
+        if ($gate['error'] !== null) {
+            self::recordLoginFailure($identity);
+            Audit::log('login_failed', 'auth', (int) $user['id'], 'Farm code rejected');
+            return ['ok' => false, 'error' => $gate['error']];
+        }
+        self::clearLoginFailures($identity);
+        return [
+            'ok' => true,
+            'user' => $user,
+            'farm_id' => $gate['farm_id'],
+            'must_change_password' => !empty($user['must_change_password']),
+        ];
+    }
+
+    /**
+     * @return array{ok:bool,error?:string,must_change_password?:bool}
+     */
+    public static function attemptLogin(string $identity, string $password, bool $remember = false, string $farmCode = ''): array
+    {
+        $result = self::authenticate($identity, $password, $farmCode);
+        if (empty($result['ok']) || empty($result['user'])) {
+            return ['ok' => false, 'error' => (string) ($result['error'] ?? 'Invalid username/email or password.')];
+        }
+        $user = $result['user'];
 
         if (PHP_SAPI !== 'cli' && !headers_sent()) {
             session_regenerate_id(true);
@@ -223,7 +325,9 @@ class Auth
         $_SESSION['user_id'] = (int) $user['id'];
         $_SESSION['session_version'] = (int) ($user['session_version'] ?? 1);
         self::clearCache();
-        if (!empty($user['farm_id'])) {
+        if (!empty($result['farm_id'])) {
+            $_SESSION['active_farm_id'] = (int) $result['farm_id'];
+        } elseif (!empty($user['farm_id'])) {
             $_SESSION['active_farm_id'] = (int) $user['farm_id'];
         } else {
             unset($_SESSION['active_farm_id']);
@@ -243,14 +347,56 @@ class Auth
         Audit::log('login', 'auth', $user['id'], 'User signed in as ' . ($user['role'] ?? ''));
         return [
             'ok' => true,
-            'must_change_password' => !empty($user['must_change_password']),
+            'must_change_password' => !empty($result['must_change_password']),
         ];
     }
 
-    public static function login(string $identity, string $password, bool $remember = false): bool
+    public static function login(string $identity, string $password, bool $remember = false, string $farmCode = ''): bool
     {
-        $result = self::attemptLogin($identity, $password, $remember);
+        $result = self::attemptLogin($identity, $password, $remember, $farmCode);
         return !empty($result['ok']);
+    }
+
+    private static function loginThrottled(string $identity): bool
+    {
+        $identity = strtolower(trim($identity));
+        if ($identity === '' || !table_exists('login_attempts')) {
+            return false;
+        }
+        $since = date('Y-m-d H:i:s', time() - 900);
+        $count = (int) db()->value(
+            'SELECT COUNT(*) FROM login_attempts WHERE identity = ? AND created_at >= ?',
+            [$identity, $since]
+        );
+        return $count >= 8;
+    }
+
+    private static function recordLoginFailure(string $identity): void
+    {
+        $identity = strtolower(trim($identity));
+        if ($identity === '' || !table_exists('login_attempts')) {
+            return;
+        }
+        try {
+            db()->insert('login_attempts', [
+                'identity' => $identity,
+                'ip' => substr((string) ($_SERVER['REMOTE_ADDR'] ?? ''), 0, 64),
+                'created_at' => date('Y-m-d H:i:s'),
+            ]);
+        } catch (Throwable $e) {
+        }
+    }
+
+    private static function clearLoginFailures(string $identity): void
+    {
+        $identity = strtolower(trim($identity));
+        if ($identity === '' || !table_exists('login_attempts')) {
+            return;
+        }
+        try {
+            db()->query('DELETE FROM login_attempts WHERE identity = ?', [$identity]);
+        } catch (Throwable $e) {
+        }
     }
 
     public static function logout(): void
@@ -270,6 +416,9 @@ class Auth
             flash('error', 'Please sign in to continue.');
             redirect('login');
         }
+        if (!self::isKnownRole((string) (self::role() ?? ''))) {
+            self::deny(403, 'Your account role is not allowed to use FarmWise.');
+        }
         if (!empty(self::user()['must_change_password'])) {
             $path = trim(current_path(), '/');
             if ($path !== 'profile' && !str_starts_with($path, 'profile/') && $path !== 'logout') {
@@ -279,14 +428,29 @@ class Auth
         }
     }
 
+    /** @return array<string, array<string, list<string>>> */
+    public static function permissionMap(): array
+    {
+        static $map;
+        if ($map === null) {
+            $loaded = require __DIR__ . '/config/permissions.php';
+            $map = is_array($loaded) ? $loaded : [];
+        }
+        return $map;
+    }
+
+    public static function isKnownRole(string $role): bool
+    {
+        return $role !== '' && array_key_exists($role, self::permissionMap());
+    }
+
     public static function can(string $module, string $action = 'view'): bool
     {
-        $role = self::role();
-        if (!$role) {
+        $role = (string) (self::role() ?? '');
+        if (!self::isKnownRole($role)) {
             return false;
         }
-        $map = require __DIR__ . '/config/permissions.php';
-        $perms = $map[$role] ?? [];
+        $perms = self::permissionMap()[$role] ?? [];
         if (isset($perms['*']) && in_array($action, $perms['*'], true)) {
             return true;
         }
@@ -295,9 +459,24 @@ class Auth
 
     public static function authorize(string $module, string $action = 'view'): void
     {
-        if (!self::can($module, $action)) {
-            abort(403, 'You do not have permission to access this module.');
+        if (!self::check()) {
+            self::deny(401, 'Please sign in to continue.');
         }
+        if (!self::isKnownRole((string) (self::role() ?? ''))) {
+            self::deny(403, 'Your account role is not allowed to use FarmWise.');
+        }
+        if (!self::can($module, $action)) {
+            self::deny(403, 'You do not have permission to access this module.');
+        }
+    }
+
+    public static function deny(int $code, string $message): void
+    {
+        $path = trim(current_path(), '/');
+        if ($path === 'api' || str_starts_with($path, 'api/')) {
+            json_response(['ok' => false, 'error' => $message], $code);
+        }
+        abort($code, $message);
     }
 
     public static function canAccessRecord(array $row): bool

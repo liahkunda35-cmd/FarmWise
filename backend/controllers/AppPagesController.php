@@ -7,35 +7,54 @@ class AppPagesController
         Auth::authorize('weather', 'view');
         $farm = self::currentFarm();
         $forecast = null;
-        if ($farm) {
-            try {
+        $locateNeeded = false;
+        $lat = input('lat');
+        $lon = input('lon');
+        $hasQueryCoords = is_numeric($lat) && is_numeric($lon);
+
+        try {
+            if ($farm && !$hasQueryCoords) {
                 $forecast = WeatherService::fetchForFarm($farm);
-            } catch (Throwable $e) {
-                $forecast = [
-                    'current' => null,
-                    'daily' => null,
-                    'meta' => [
-                        'ok' => false,
-                        'error' => 'api_error',
-                        'message' => 'Weather could not be loaded right now. Try again shortly.',
-                    ],
-                ];
+                // Farm exists but has no pin — fall through to device GPS
+                if (!empty($forecast['meta']['error']) && ($forecast['meta']['error'] === 'missing_location')) {
+                    $locateNeeded = true;
+                }
+            } elseif ($hasQueryCoords) {
+                $forecast = WeatherService::fetchAt((float) $lat, (float) $lon, [
+                    'label' => (string) input('label', ''),
+                    'precision' => 'confirmed',
+                ]);
+            } else {
+                $locateNeeded = true;
             }
+        } catch (Throwable $e) {
+            $forecast = [
+                'current' => null,
+                'daily' => null,
+                'meta' => [
+                    'ok' => false,
+                    'error' => 'api_error',
+                    'message' => 'Weather could not be loaded right now. Try again shortly.',
+                ],
+            ];
         }
+
         $history = $farm
             ? db()->select('SELECT * FROM weather_logs WHERE farm_id = ? ORDER BY log_date DESC LIMIT 14', [$farm['id']])
             : [];
-        $tips = ($forecast && $farm && !empty($forecast['current'])) ? WeatherService::recommendations($forecast, $farm) : [];
+        $tips = ($forecast && !empty($forecast['current']))
+            ? WeatherService::recommendations($forecast, $farm ?: ['name' => 'Your location'])
+            : [];
         view('layouts/app', [
-            'title' => 'Weather & Environment',
-            'content' => render('weather', compact('farm', 'forecast', 'history', 'tips')),
+            'title' => 'Weather',
+            'content' => render('weather', compact('farm', 'forecast', 'history', 'tips', 'locateNeeded')),
         ]);
     }
 
     public static function notifications(): void
     {
         Auth::authorize('notifications', 'view');
-        NotificationService::syncAlerts();
+        NotificationService::syncAlerts(true);
         [$sql, $params] = self::notificationScope();
         $q = input('q');
         if ($q) {
@@ -53,7 +72,7 @@ class AppPagesController
         $sql .= ' ORDER BY id DESC LIMIT 80';
         $rows = db()->select($sql, $params);
         view('layouts/app', [
-            'title' => 'Notifications & Alerts',
+            'title' => 'Alerts',
             'content' => render('notifications', compact('rows', 'filter')),
         ]);
     }
@@ -80,6 +99,16 @@ class AppPagesController
         redirect('notifications');
     }
 
+    public static function dismissNotification($id): void
+    {
+        Auth::authorize('notifications', 'view');
+        Csrf::verify();
+        $row = self::ownedNotification($id);
+        db()->delete('notifications', $row['id']);
+        flash('success', 'Alert dismissed.');
+        redirect('notifications' . (input('filter') ? ('?filter=' . urlencode((string) input('filter'))) : ''));
+    }
+
     private static function notificationWhere(): array
     {
         $sql = '1=1';
@@ -88,11 +117,12 @@ class AppPagesController
             $sql .= ' AND (user_id IS NULL OR user_id = ?)';
             $params[] = Auth::id();
         } elseif (Auth::farmId()) {
-            $sql .= ' AND (user_id = ? OR user_id IS NULL) AND (farm_id = ? OR farm_id IS NULL)';
+            // Always show alerts aimed at me, plus farm-wide alerts for my farm.
+            $sql .= ' AND (user_id = ? OR (user_id IS NULL AND (farm_id = ? OR farm_id IS NULL)))';
             $params[] = Auth::id();
             $params[] = Auth::farmId();
         } else {
-            $sql .= ' AND user_id = ? AND farm_id IS NULL';
+            $sql .= ' AND user_id = ?';
             $params[] = Auth::id();
         }
         return [$sql, $params];
@@ -234,6 +264,50 @@ class AppPagesController
     public static function marketInsights(): void
     {
         Auth::authorize('market_insights', 'view');
+        Schema::ensureMarketAndAgriSchema(db());
+
+        if (is_post() && Auth::isAdmin()) {
+            Csrf::check();
+            $action = (string) input('action');
+            try {
+                if ($action === 'sync_hdx') {
+                    $months = max(6, min(120, (int) (input('months_back') ?: 36)));
+                    $local = null;
+                    if (!empty($_FILES['hdx_file']['tmp_name']) && is_uploaded_file($_FILES['hdx_file']['tmp_name'])) {
+                        $ext = strtolower(pathinfo((string) $_FILES['hdx_file']['name'], PATHINFO_EXTENSION));
+                        if ($ext !== 'csv') {
+                            throw new RuntimeException('Upload the HDX .csv file.');
+                        }
+                        $dest = dirname(__DIR__, 2) . '/storage/uploads/hdx-' . date('YmdHis') . '.csv';
+                        @mkdir(dirname($dest), 0775, true);
+                        if (!move_uploaded_file($_FILES['hdx_file']['tmp_name'], $dest)) {
+                            throw new RuntimeException('HDX upload failed.');
+                        }
+                        $local = $dest;
+                    }
+                    $result = MarketPriceSync::syncHdx($local, $months);
+                    flash('success', $result['message']);
+                } elseif ($action === 'import_bulletin') {
+                    $row = [
+                        'crop_name' => input('crop_name'),
+                        'market' => input('market'),
+                        'price_date' => input('price_date'),
+                        'price' => input('price'),
+                        'unit' => input('unit') ?: 'KG',
+                        'province' => input('province'),
+                        'district' => input('district'),
+                        'demand_level' => input('demand_level') ?: 'medium',
+                        'notes' => input('notes'),
+                    ];
+                    $result = MarketPriceSync::importBulletinRows([$row], Auth::id());
+                    flash('success', $result['message']);
+                }
+            } catch (Throwable $e) {
+                flash('error', 'Import failed: ' . $e->getMessage());
+            }
+            redirect('market-insights');
+        }
+
         if (Auth::isAdmin() && !Auth::farmId()) {
             $where = '1=1';
             $params = [];
@@ -244,24 +318,146 @@ class AppPagesController
             $where = '1=0';
             $params = [];
         }
+
+        $filterCrop = trim((string) input('crop'));
+        $filterSource = trim((string) input('source'));
+        $filterProvince = trim((string) input('province'));
+        if ($filterCrop !== '') {
+            $where .= ' AND lower(crop_name) LIKE ?';
+            $params[] = '%' . mb_strtolower($filterCrop) . '%';
+        }
+        if ($filterSource !== '') {
+            $where .= ' AND source = ?';
+            $params[] = $filterSource;
+        }
+        if ($filterProvince !== '') {
+            $where .= ' AND lower(COALESCE(province,\'\')) LIKE ?';
+            $params[] = '%' . mb_strtolower($filterProvince) . '%';
+        }
+
         $prices = db()->select(
-            "SELECT * FROM market_prices WHERE {$where} ORDER BY price_date DESC, id DESC LIMIT 40",
+            "SELECT * FROM market_prices WHERE {$where} ORDER BY price_date DESC, id DESC LIMIT 80",
             $params
         );
         $crops = [];
         foreach (db()->select(
-            "SELECT crop_name, AVG(price_per_kg) AS avg_price, MAX(price_per_kg) AS high_price, MIN(price_per_kg) AS low_price FROM market_prices WHERE {$where} GROUP BY crop_name",
+            "SELECT crop_name, AVG(NULLIF(price_per_kg,0)) AS avg_price, MAX(price_per_kg) AS high_price, MIN(NULLIF(price_per_kg,0)) AS low_price FROM market_prices WHERE {$where} GROUP BY crop_name ORDER BY crop_name LIMIT 40",
             $params
         ) as $row) {
             $latestParams = $params;
-            $latestSql = "SELECT * FROM market_prices WHERE crop_name = ? AND {$where} ORDER BY price_date DESC";
+            $latestSql = "SELECT * FROM market_prices WHERE crop_name = ? AND {$where} ORDER BY price_date DESC, id DESC";
             array_unshift($latestParams, $row['crop_name']);
             $latest = db()->first($latestSql, $latestParams);
-            $crops[] = array_merge($row, ['latest' => $latest]);
+            $mom = null;
+            if ($latest && !empty($latest['price_date'])) {
+                $prior = db()->first(
+                    "SELECT price_per_kg, price_date FROM market_prices
+                     WHERE crop_name = ? AND {$where} AND price_date < ? AND price_per_kg IS NOT NULL AND price_per_kg > 0
+                     ORDER BY price_date DESC LIMIT 1",
+                    array_merge([$row['crop_name']], $params, [$latest['price_date']])
+                );
+                if ($prior && (float) ($prior['price_per_kg'] ?? 0) > 0 && (float) ($latest['price_per_kg'] ?? 0) > 0) {
+                    $mom = round((((float) $latest['price_per_kg'] - (float) $prior['price_per_kg']) / (float) $prior['price_per_kg']) * 100, 1);
+                }
+            }
+            $crops[] = array_merge($row, ['latest' => $latest, 'mom_pct' => $mom]);
         }
+
+        $trendCrop = $filterCrop !== '' ? $filterCrop : (string) ($crops[0]['crop_name'] ?? 'Maize');
+        $trendRows = db()->select(
+            "SELECT price_date, AVG(NULLIF(price_per_kg,0)) AS avg_price
+             FROM market_prices WHERE {$where} AND lower(crop_name) LIKE ?
+             GROUP BY price_date ORDER BY price_date ASC LIMIT 48",
+            array_merge($params, ['%' . mb_strtolower($trendCrop) . '%'])
+        );
+        $chart = [
+            'labels' => array_map(static fn ($r) => $r['price_date'], $trendRows),
+            'values' => array_map(static fn ($r) => $r['avg_price'] !== null ? (float) $r['avg_price'] : null, $trendRows),
+            'crop' => $trendCrop,
+        ];
+        $sources = db()->select("SELECT DISTINCT source FROM market_prices WHERE source IS NOT NULL AND source <> '' ORDER BY source");
+        $isAdmin = Auth::isAdmin();
+
         view('layouts/app', [
             'title' => 'Market Insights',
-            'content' => render('market_insights', compact('prices', 'crops')),
+            'content' => render('market_insights', compact('prices', 'crops', 'chart', 'sources', 'filterCrop', 'filterSource', 'filterProvince', 'isAdmin')),
+        ]);
+    }
+
+    public static function agriHistory(): void
+    {
+        Auth::authorize('agri_history', 'view');
+        Schema::ensureMarketAndAgriSchema(db());
+
+        if (is_post() && Auth::isAdmin()) {
+            Csrf::check();
+            $action = (string) input('action');
+            try {
+                if ($action === 'import_cfs') {
+                    $path = null;
+                    if (!empty($_FILES['cfs_file']['tmp_name']) && is_uploaded_file($_FILES['cfs_file']['tmp_name'])) {
+                        $ext = strtolower(pathinfo((string) $_FILES['cfs_file']['name'], PATHINFO_EXTENSION));
+                        if (!in_array($ext, ['xlsx', 'csv'], true)) {
+                            throw new RuntimeException('Upload a published CFS .xlsx or aggregate .csv only.');
+                        }
+                        $dest = dirname(__DIR__, 2) . '/storage/uploads/cfs-' . date('YmdHis') . '.' . $ext;
+                        @mkdir(dirname($dest), 0775, true);
+                        if (!move_uploaded_file($_FILES['cfs_file']['tmp_name'], $dest)) {
+                            throw new RuntimeException('Upload failed.');
+                        }
+                        $path = $dest;
+                    } elseif (input('use_repo_file')) {
+                        $path = dirname(__DIR__, 2) . '/Crop-Forecast-Survey-2025_2026.xlsx';
+                    }
+                    if (!$path) {
+                        throw new RuntimeException('Choose a CFS file or use the repository Excel.');
+                    }
+                    $kind = (string) (input('kind') ?: 'crop');
+                    $meta = [
+                        'title' => input('title') ?: null,
+                        'season_label' => input('season_label') ?: null,
+                        'source_url' => input('source_url') ?: 'https://www.zamstats.gov.zm/agriculture-and-environment/',
+                        'imported_by' => Auth::id(),
+                        'kind' => $kind,
+                    ];
+                    $result = ZamstatsAgriImport::importFile($path, $meta);
+                    flash('success', $result['message']);
+                }
+            } catch (Throwable $e) {
+                flash('error', 'CFS import failed: ' . $e->getMessage());
+            }
+            redirect('agri-history');
+        }
+
+        $crop = trim((string) input('crop')) ?: 'Maize (for grain)';
+        $province = trim((string) input('province'));
+        $season = trim((string) input('season'));
+        $farm = self::currentFarm();
+        if ($province === '' && $farm) {
+            $province = (string) ($farm['province'] ?? '');
+        }
+        $provinceNorm = $province !== '' ? ZamstatsAgriImport::normalizeProvince($province) : null;
+
+        $trend = AgriPatternService::cropTrend($crop, $provinceNorm && !in_array($provinceNorm, ['National', 'Total'], true) ? $provinceNorm : null);
+        $comparison = AgriPatternService::provincialComparison($crop, $season !== '' ? $season : null);
+        $recommendations = AgriPatternService::recommendForProvince($provinceNorm);
+        $farmCompare = $farm ? AgriPatternService::farmVersusProvince((int) $farm['id']) : [];
+        $datasets = db()->select('SELECT * FROM zamstats_datasets ORDER BY id DESC LIMIT 20');
+        $cropOptions = AgriPatternService::crops();
+        $provinceOptions = AgriPatternService::provinces();
+        $seasonOptions = AgriPatternService::seasons();
+        $rainfallCount = (int) db()->value('SELECT COUNT(*) FROM zamstats_rainfall');
+        $livestockCount = (int) db()->value('SELECT COUNT(*) FROM zamstats_livestock');
+        $statCount = (int) db()->value('SELECT COUNT(*) FROM zamstats_crop_stats');
+        $isAdmin = Auth::isAdmin();
+
+        view('layouts/app', [
+            'title' => 'Agricultural History',
+            'content' => render('agri_history', compact(
+                'crop', 'province', 'season', 'trend', 'comparison', 'recommendations', 'farmCompare',
+                'datasets', 'cropOptions', 'provinceOptions', 'seasonOptions',
+                'rainfallCount', 'livestockCount', 'statCount', 'isAdmin', 'farm'
+            )),
         ]);
     }
 
@@ -270,10 +466,10 @@ class AppPagesController
         Auth::authorize('users', 'view');
         $sql = 'SELECT u.*, f.name AS farm_name FROM users u LEFT JOIN farms f ON f.id = u.farm_id WHERE 1=1';
         $params = [];
+        // Admins see every account (dashboard active-user count). Non-admins stay farm-scoped.
         if (!Auth::isAdmin()) {
-            $sql .= ' AND u.role != ? AND u.status NOT IN (?, ?)';
+            $sql .= ' AND u.role != ? AND u.status != ?';
             $params[] = 'admin';
-            $params[] = 'pending';
             $params[] = 'rejected';
             if (Auth::farmId()) {
                 $sql .= ' AND u.farm_id = ?';
@@ -281,16 +477,59 @@ class AppPagesController
             } else {
                 $sql .= ' AND 1=0';
             }
-        } elseif (Auth::farmId()) {
-            $sql .= ' AND (u.farm_id = ? OR u.farm_id IS NULL OR u.status = ?)';
-            $params[] = Auth::farmId();
-            $params[] = 'pending';
         }
-        $rows = db()->select($sql . ' ORDER BY CASE u.status WHEN \'pending\' THEN 0 WHEN \'approved\' THEN 1 ELSE 2 END, u.id DESC', $params);
+        $q = trim((string) input('q'));
+        $filterRole = trim((string) input('role'));
+        $filterStatus = trim((string) input('status'));
+        if ($q !== '') {
+            $sql .= ' AND (lower(u.name) LIKE ? OR lower(u.email) LIKE ? OR lower(COALESCE(u.username, \'\')) LIKE ?)';
+            $like = '%' . mb_strtolower($q) . '%';
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
+        }
+        if ($filterRole !== '' && array_key_exists($filterRole, Auth::roles())) {
+            $sql .= ' AND u.role = ?';
+            $params[] = $filterRole;
+        }
+        if ($filterStatus !== '' && in_array($filterStatus, ['pending', 'approved', 'active', 'rejected', 'suspended', 'inactive'], true)) {
+            $sql .= ' AND u.status = ?';
+            $params[] = $filterStatus;
+        }
+        $rows = db()->select(
+            str_replace(
+                'SELECT u.*, f.name AS farm_name',
+                'SELECT u.id, u.name, u.username, u.email, u.role, u.requested_role, u.status, u.last_login, u.created_at, u.farm_id, u.must_change_password, f.name AS farm_name',
+                $sql
+            ) . ' ORDER BY CASE u.status WHEN \'pending\' THEN 0 WHEN \'approved\' THEN 1 ELSE 2 END, u.id DESC',
+            $params
+        );
         $farms = farm_options();
-        $pendingCount = Auth::isAdmin()
-            ? (int) db()->value("SELECT COUNT(*) FROM users WHERE status = 'pending'")
-            : 0;
+        $pendingSql = "SELECT id, name, username, email, role, requested_role, status, farm_id, created_at, must_change_password FROM users WHERE status = 'pending'";
+        $pendingParams = [];
+        if (!Auth::isAdmin()) {
+            $pendingSql .= ' AND role != ?';
+            $pendingParams[] = 'admin';
+            if (Auth::farmId()) {
+                $pendingSql .= ' AND farm_id = ?';
+                $pendingParams[] = Auth::farmId();
+            } else {
+                $pendingSql .= ' AND 1=0';
+            }
+        }
+        $pendingSql .= ' ORDER BY created_at ASC, id ASC LIMIT 20';
+        $pendingUsers = db()->select($pendingSql, $pendingParams);
+        $pendingCount = count($pendingUsers);
+        if (Auth::isAdmin()) {
+            $pendingCount = (int) db()->value("SELECT COUNT(*) FROM users WHERE status = 'pending'");
+        } elseif (Auth::farmId()) {
+            $pendingCount = (int) db()->value(
+                "SELECT COUNT(*) FROM users WHERE status = 'pending' AND role != 'admin' AND farm_id = ?",
+                [Auth::farmId()]
+            );
+        } else {
+            $pendingCount = 0;
+        }
         $directory = fe_user_directory_summary();
         $perms = require dirname(__DIR__) . '/config/permissions.php';
         $moduleTitles = [];
@@ -299,18 +538,18 @@ class AppPagesController
         }
         view('layouts/app', [
             'title' => 'User Management',
-            'content' => render('admin/users', compact('rows', 'farms', 'pendingCount', 'directory', 'perms', 'moduleTitles')),
+            'content' => render('admin/users', compact('rows', 'farms', 'pendingCount', 'pendingUsers', 'directory', 'perms', 'moduleTitles')),
         ]);
     }
 
     public static function pendingRegistration($id): void
     {
         Auth::authorize('users', 'edit');
-        if (!Auth::isAdmin()) {
-            abort(403, 'Only administrators can review registration requests.');
-        }
         $pendingUser = db()->find('users', $id);
-        if (!$pendingUser || !in_array($pendingUser['status'], ['pending', 'approved', 'rejected'], true)) {
+        if (!$pendingUser || !RegistrationService::canReview($pendingUser)) {
+            abort(403, 'You cannot review this registration request.');
+        }
+        if (!$pendingUser || !in_array($pendingUser['status'], ['pending', 'approved', 'rejected', 'active'], true)) {
             flash('error', 'Registration request not found.');
             redirect('users');
         }
@@ -334,9 +573,7 @@ class AppPagesController
     {
         Auth::authorize('users', 'edit');
         Csrf::verify();
-        if (!Auth::isAdmin()) {
-            abort(403, 'Only administrators can approve registrations.');
-        }
+        $redirectTo = trim((string) input('redirect_to')) ?: 'users';
         $role = (string) input('role');
         $farmIds = input('farm_ids');
         if (!is_array($farmIds)) {
@@ -346,32 +583,53 @@ class AppPagesController
         $result = RegistrationService::approve((int) $id, $role, $farmIds, $createFarm, (string) input('notes'));
         if (empty($result['ok'])) {
             flash('error', (string) ($result['error'] ?? 'Approval failed.'));
-            redirect('users/pending/' . $id);
+            redirect(str_starts_with($redirectTo, 'dashboard') ? $redirectTo : ('users/pending/' . $id));
         }
-        $emailNote = !empty($result['email_result']['ok'])
-            ? 'Activation email queued via ' . (($result['email_result']['channel'] ?? 'email')) . '.'
-            : ('Activation email was not sent: ' . ($result['email_result']['error'] ?? 'email not configured') . '.');
+        $emailResult = is_array($result['email_result'] ?? null) ? $result['email_result'] : [];
+        if (!empty($emailResult['skipped'])) {
+            $emailNote = 'No credential email was sent (only farm owners receive account emails). Staff sign in with their password and the farm owner’s Farm Code.';
+        } elseif (!empty($result['activated'])) {
+            $emailNote = !empty($emailResult['ok'])
+                ? 'They can sign in with the username or email and password from registration. Approval email sent (password is never emailed).'
+                : ('The account is active — they can sign in with the password they created. Approval email was not delivered: ' . ($emailResult['error'] ?? 'email not configured') . '.');
+        } else {
+            $emailNote = !empty($emailResult['ok'])
+                ? 'Activation email queued via ' . (($emailResult['channel'] ?? 'email')) . '.'
+                : ('The account is approved. Activation email was not delivered: ' . ($emailResult['error'] ?? 'email not configured') . '.');
+        }
         flash('success', 'Account approved. ' . $emailNote);
-        redirect('users');
+        redirect($redirectTo);
+    }
+
+    public static function resendRegistrationEmail($id): void
+    {
+        Auth::authorize('users', 'edit');
+        Csrf::verify();
+        $redirectTo = trim((string) input('redirect_to')) ?: ('users/pending/' . $id);
+        $result = RegistrationService::resendOwnerApprovalEmail((int) $id);
+        if (empty($result['ok'])) {
+            flash('error', (string) ($result['error'] ?? 'Could not resend email.'));
+            redirect($redirectTo);
+        }
+        flash('success', 'Approval email resent to the farm owner (password is never included).');
+        redirect($redirectTo);
     }
 
     public static function rejectRegistration($id): void
     {
         Auth::authorize('users', 'edit');
         Csrf::verify();
-        if (!Auth::isAdmin()) {
-            abort(403, 'Only administrators can reject registrations.');
-        }
+        $redirectTo = trim((string) input('redirect_to')) ?: 'users';
         $result = RegistrationService::reject((int) $id, (string) input('rejection_reason'));
         if (empty($result['ok'])) {
             flash('error', (string) ($result['error'] ?? 'Rejection failed.'));
-            redirect('users/pending/' . $id);
+            redirect(str_starts_with($redirectTo, 'dashboard') ? $redirectTo : ('users/pending/' . $id));
         }
         $emailNote = !empty($result['email_result']['ok'])
             ? 'Applicant notified by email.'
             : ('Email not sent: ' . ($result['email_result']['error'] ?? 'not configured') . '.');
         flash('success', 'Registration rejected. ' . $emailNote);
-        redirect('users');
+        redirect($redirectTo);
     }
 
     public static function editUser($id): void
@@ -388,11 +646,20 @@ class AppPagesController
             $params[] = 'admin';
             $params[] = Auth::farmId();
         }
-        $rows = db()->select($sql . ' ORDER BY u.id DESC', $params);
+        $rows = db()->select(
+            str_replace(
+                'SELECT u.*, f.name AS farm_name',
+                'SELECT u.id, u.name, u.username, u.email, u.role, u.requested_role, u.status, u.last_login, u.created_at, u.farm_id, u.must_change_password, f.name AS farm_name',
+                $sql
+            ) . ' ORDER BY u.id DESC',
+            $params
+        );
         $farms = farm_options();
+        $pendingCount = 0;
+        $pendingUsers = [];
         view('layouts/app', [
             'title' => 'Edit user',
-            'content' => render('admin/users', compact('rows', 'farms', 'editUser')),
+            'content' => render('admin/users', compact('rows', 'farms', 'editUser', 'pendingCount', 'pendingUsers')),
         ]);
     }
 
@@ -421,7 +688,8 @@ class AppPagesController
         }
         $allowedStatuses = ['active', 'inactive', 'suspended'];
         if (!in_array($status, $allowedStatuses, true)) {
-            $status = 'active';
+            flash('error', 'Invalid account status.');
+            redirect($failTo);
         }
         $farmIds = input('farm_ids');
         if (!is_array($farmIds)) {
@@ -452,6 +720,24 @@ class AppPagesController
         if ($name === '' || mb_strlen($name) > 120 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             flash('error', 'Name and a valid email are required.');
             redirect($failTo);
+        }
+        // Admin create: if username left blank, derive one from the email local-part.
+        if (!$id && $username === '') {
+            $local = strtolower((string) strtok($email, '@'));
+            $username = RegistrationService::normalizeUsername($local !== '' ? $local : 'user');
+            if ($username === '') {
+                $username = 'user';
+            }
+            $base = $username;
+            $n = 1;
+            while (db()->first('SELECT id FROM users WHERE lower(username) = ?', [$username])) {
+                $username = $base . $n;
+                $n++;
+                if ($n > 99) {
+                    break;
+                }
+            }
+            $usernameRaw = $username;
         }
         if ($usernameErr = RegistrationService::usernameError($usernameRaw, false)) {
             flash('error', $usernameErr);
@@ -525,22 +811,99 @@ class AppPagesController
         redirect('users');
     }
 
+    public static function setUserStatus($id): void
+    {
+        Auth::authorize('users', 'edit');
+        Csrf::verify();
+        $redirectTo = trim((string) input('redirect_to')) ?: 'users';
+        if ((int) $id === (int) Auth::id()) {
+            flash('error', 'You cannot change the status of your own administrator account.');
+            redirect($redirectTo);
+        }
+        $target = db()->find('users', $id);
+        if (!$target || !Auth::canManageUser($target)) {
+            abort(403, 'You cannot manage this user.');
+        }
+        $status = (string) input('status');
+        $allowed = ['active', 'suspended', 'inactive'];
+        if (!in_array($status, $allowed, true)) {
+            flash('error', 'Invalid account status.');
+            redirect($redirectTo);
+        }
+        $current = (string) ($target['status'] ?? '');
+        if (in_array($current, ['pending', 'approved', 'rejected'], true)) {
+            flash('error', 'Use Approve or Reject for registration requests.');
+            redirect($redirectTo);
+        }
+        if ($current === $status) {
+            flash('success', 'Account status is already ' . $status . '.');
+            redirect($redirectTo);
+        }
+        db()->update('users', [
+            'status' => $status,
+            'session_version' => (int) ($target['session_version'] ?? 1) + 1,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ], $id);
+        Audit::log('update', 'users', (int) $id, 'Status set to ' . $status);
+        $labels = ['active' => 'reactivated', 'suspended' => 'suspended', 'inactive' => 'deactivated'];
+        flash('success', 'Account ' . ($labels[$status] ?? 'updated') . '.');
+        redirect($redirectTo);
+    }
+
     public static function deleteUser($id): void
     {
         Auth::authorize('users', 'delete');
         Csrf::verify();
+        $redirectTo = trim((string) input('redirect_to')) ?: 'users';
         if ((int) $id === (int) Auth::id()) {
             flash('error', 'You cannot delete your own account.');
-            redirect('users');
+            redirect($redirectTo);
         }
         $target = db()->find('users', $id);
         if (!$target || !Auth::canManageUser($target)) {
             abort(403, 'You cannot delete this user.');
         }
-        db()->delete('users', $id);
-        Audit::log('delete', 'users', $id);
-        flash('success', 'User deleted.');
-        redirect('users');
+        $userId = (int) $id;
+        $status = (string) ($target['status'] ?? '');
+        $hasAudit = (int) db()->value('SELECT COUNT(*) FROM audit_logs WHERE user_id = ?', [$userId]) > 0;
+        $ownsFarm = table_exists('farms')
+            && (int) db()->value('SELECT COUNT(*) FROM farms WHERE owner_id = ?', [$userId]) > 0;
+        $safeHardDelete = in_array($status, ['pending', 'rejected'], true) && !$hasAudit && !$ownsFarm;
+        if ($safeHardDelete) {
+            try {
+                db()->query('DELETE FROM user_farms WHERE user_id = ?', [$userId]);
+            } catch (Throwable $e) {
+            }
+            try {
+                db()->query(
+                    "UPDATE notifications SET is_read = 1 WHERE category = 'registration' AND link = ?",
+                    ['users/pending/' . $userId]
+                );
+            } catch (Throwable $e) {
+            }
+            db()->delete('users', $userId);
+            Audit::log('delete', 'users', $userId, 'Hard-deleted pending/rejected registration');
+            flash('success', 'Registration request removed.');
+            redirect($redirectTo);
+        }
+        // Preserve farm records, transactions and history — deactivate instead of erase.
+        db()->update('users', [
+            'status' => 'inactive',
+            'session_version' => (int) ($target['session_version'] ?? 1) + 1,
+            'activation_token_hash' => null,
+            'activation_expires_at' => null,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ], $userId);
+        try {
+            db()->query(
+                "UPDATE notifications SET is_read = 1 WHERE category = 'registration' AND link = ?",
+                ['users/pending/' . $userId]
+            );
+        } catch (Throwable $e) {
+        }
+        Audit::log('delete', 'users', $userId, 'Soft-deleted (deactivated) to preserve related records');
+        flash('success', 'Account deactivated. Farm and business records were kept.');
+        redirect($redirectTo);
     }
 
     public static function audit(): void
@@ -732,7 +1095,7 @@ class AppPagesController
         Auth::authorize('fields', 'view');
         [$farmClause, $farmParams] = active_farm_constraint('farm_id');
         $fields = db()->select(
-            'SELECT * FROM fields WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND ' . $farmClause,
+            'SELECT * FROM fields WHERE ' . $farmClause . ' ORDER BY name ASC',
             $farmParams
         );
         if (Auth::isAdmin() && !Auth::farmId()) {
@@ -747,6 +1110,407 @@ class AppPagesController
             'title' => 'Farm Map',
             'content' => render('map', compact('fields', 'farms')),
         ]);
+    }
+
+    public static function saveMapLocation(): void
+    {
+        Auth::authorize('farms', 'edit');
+        Csrf::verify();
+        $farmId = (int) input('farm_id', Auth::farmId() ?: 0);
+        if ($farmId <= 0 || (!Auth::isAdmin() && !Auth::canAccessFarm($farmId))) {
+            flash('error', 'Choose a farm before saving a location.');
+            redirect('map');
+        }
+        $lat = input('latitude');
+        $lng = input('longitude');
+        if (!is_numeric($lat) || !is_numeric($lng)) {
+            flash('error', 'Pick a location on the map first.');
+            redirect('map');
+        }
+        $lat = round((float) $lat, 7);
+        $lng = round((float) $lng, 7);
+        if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
+            flash('error', 'Those coordinates are invalid.');
+            redirect('map');
+        }
+        $label = trim((string) input('location_label', ''));
+        $farm = db()->find('farms', $farmId);
+        if (!$farm) {
+            flash('error', 'Farm not found.');
+            redirect('map');
+        }
+        $location = $label !== '' ? $label : trim((string) (($farm['town'] ?? '') . (($farm['district'] ?? '') ? ', ' . $farm['district'] : '')));
+        db()->update('farms', [
+            'latitude' => $lat,
+            'longitude' => $lng,
+            'location_precision' => 'confirmed',
+            'location_label' => $label !== '' ? $label : ($farm['location_label'] ?? null),
+            'location' => $location !== '' ? $location : ($farm['location'] ?? null),
+        ], $farmId);
+        Audit::log('update', 'farms', $farmId, 'Saved farm map location');
+        flash('success', 'Farm location saved.');
+        redirect('map');
+    }
+
+    public static function fieldsPlanner(): void
+    {
+        Auth::authorize('fields', 'view');
+        $farm = self::currentFarm();
+        $fields = [];
+        if ($farm) {
+            $fields = db()->select(
+                'SELECT f.*, (
+                    SELECT COUNT(*) FROM plantings p WHERE p.field_id = f.id
+                 ) AS planting_count
+                 FROM fields f
+                 WHERE f.farm_id = ?
+                 ORDER BY f.name ASC',
+                [$farm['id']]
+            );
+        }
+        view('layouts/app', [
+            'title' => 'Fields & Plots',
+            'content' => render('fields_planner', compact('farm', 'fields')),
+        ]);
+    }
+
+    public static function fieldsOptions(): void
+    {
+        Auth::requireAuth();
+        if (!Auth::can('fields', 'view') && !Auth::can('plantings', 'view') && !Auth::can('soil_records', 'view')) {
+            json_response(['ok' => false, 'error' => 'Not allowed.', 'fields' => []], 403);
+        }
+        $farmId = (int) input('farm_id', Auth::farmId() ?: 0);
+        if ($farmId <= 0) {
+            $accessible = Auth::accessibleFarms();
+            if (count($accessible) === 1) {
+                $farmId = (int) $accessible[0]['id'];
+            }
+        }
+        if ($farmId <= 0) {
+            json_response(['ok' => true, 'fields' => [], 'message' => 'No farm selected.']);
+        }
+        if (!Auth::canAccessFarm($farmId) && !Auth::isAdmin()) {
+            json_response(['ok' => false, 'error' => 'Farm not accessible.', 'fields' => []], 403);
+        }
+        $includeInactive = (string) input('include_inactive', '') === '1';
+        $sql = 'SELECT id, name, status, size_hectares, farm_id FROM fields WHERE farm_id = ?';
+        $params = [$farmId];
+        if (!$includeInactive) {
+            $sql .= " AND COALESCE(status, 'active') IN ('active', 'fallow', 'reserved')";
+        }
+        $sql .= ' ORDER BY name ASC';
+        $rows = db()->select($sql, $params);
+        $fields = [];
+        foreach ($rows as $r) {
+            $fields[] = [
+                'id' => (int) $r['id'],
+                'name' => (string) $r['name'],
+                'status' => (string) ($r['status'] ?? 'active'),
+                'size_hectares' => (float) ($r['size_hectares'] ?? 0),
+                'farm_id' => (int) $r['farm_id'],
+            ];
+        }
+        json_response([
+            'ok' => true,
+            'fields' => $fields,
+            'empty_message' => $fields
+                ? null
+                : 'No fields available. Please create fields in Fields & Plots first.',
+            'create_url' => url('fields-planner'),
+        ]);
+    }
+
+    public static function saveFieldJson(): void
+    {
+        Auth::requireAuth();
+        header('Content-Type: application/json; charset=utf-8');
+        $body = json_decode(file_get_contents('php://input') ?: '{}', true);
+        if (!is_array($body)) {
+            $body = $_POST;
+        }
+        $csrf = (string) ($body['_csrf'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
+        if ($csrf === '' || !hash_equals(Csrf::token(), $csrf)) {
+            json_response(['ok' => false, 'error' => 'Security token expired. Refresh and try again.'], 419);
+        }
+        $farm = self::currentFarm();
+        if (!$farm) {
+            json_response(['ok' => false, 'error' => 'Register a farm before creating fields.'], 400);
+        }
+        $farmId = (int) $farm['id'];
+        $id = (int) ($body['id'] ?? 0);
+        $isUpdate = $id > 0;
+        if ($isUpdate && !Auth::can('fields', 'edit')) {
+            json_response(['ok' => false, 'error' => 'You do not have permission to edit fields.'], 403);
+        }
+        if (!$isUpdate && !Auth::can('fields', 'create')) {
+            json_response(['ok' => false, 'error' => 'You do not have permission to create fields.'], 403);
+        }
+        $name = trim((string) ($body['name'] ?? ''));
+        if ($name === '') {
+            json_response(['ok' => false, 'error' => 'Field name is required.'], 422);
+        }
+        $name = mb_substr($name, 0, 120);
+        $dup = db()->first(
+            'SELECT id FROM fields WHERE farm_id = ? AND LOWER(name) = LOWER(?) AND id <> ? LIMIT 1',
+            [$farmId, $name, $id]
+        );
+        if ($dup) {
+            json_response(['ok' => false, 'error' => 'That field name is already used on this farm.'], 422);
+        }
+        $geo = $body['geometry'] ?? null;
+        if (!is_array($geo)) {
+            json_response(['ok' => false, 'error' => 'Field boundary geometry is required.'], 422);
+        }
+        $status = (string) ($body['status'] ?? 'active');
+        if (!in_array($status, ['active', 'fallow', 'reserved'], true)) {
+            $status = 'active';
+        }
+        $size = isset($body['size_hectares']) && is_numeric($body['size_hectares'])
+            ? round((float) $body['size_hectares'], 2)
+            : 0.0;
+        $lat = isset($body['latitude']) && is_numeric($body['latitude']) ? round((float) $body['latitude'], 7) : null;
+        $lng = isset($body['longitude']) && is_numeric($body['longitude']) ? round((float) $body['longitude'], 7) : null;
+        $description = mb_substr(trim((string) ($body['description'] ?? '')), 0, 2000);
+        $notes = '[[GEOJSON]]' . json_encode($geo);
+        $payload = [
+            'farm_id' => $farmId,
+            'name' => $name,
+            'size_hectares' => $size,
+            'status' => $status,
+            'latitude' => $lat,
+            'longitude' => $lng,
+            'boundary_notes' => $notes,
+            'description' => $description !== '' ? $description : null,
+        ];
+        // land_use kept in sync lightly for older list views
+        if ($description !== '') {
+            $payload['land_use'] = mb_substr($description, 0, 120);
+        }
+        try {
+            if ($isUpdate) {
+                $existing = db()->find('fields', $id);
+                if (!$existing || (int) $existing['farm_id'] !== $farmId) {
+                    json_response(['ok' => false, 'error' => 'Field not found on this farm.'], 404);
+                }
+                db()->update('fields', $payload, $id);
+            } else {
+                $id = db()->insert('fields', $payload);
+            }
+        } catch (Throwable $e) {
+            log_internal_error('fields_save', $e);
+            json_response(['ok' => false, 'error' => 'Could not save field.'], 500);
+        }
+        Audit::log($isUpdate ? 'update' : 'create', 'fields', $id, 'Field saved from Fields & Plots map');
+        json_response([
+            'ok' => true,
+            'field' => [
+                'id' => (int) $id,
+                'name' => $name,
+                'status' => $status,
+                'size_hectares' => $size,
+                'description' => $description,
+                'farm_id' => $farmId,
+                'latitude' => $lat,
+                'longitude' => $lng,
+            ],
+        ]);
+    }
+
+    public static function deleteFieldJson(): void
+    {
+        Auth::requireAuth();
+        header('Content-Type: application/json; charset=utf-8');
+        if (!Auth::can('fields', 'delete')) {
+            json_response(['ok' => false, 'error' => 'You do not have permission to delete fields.'], 403);
+        }
+        $body = json_decode(file_get_contents('php://input') ?: '{}', true);
+        if (!is_array($body)) {
+            $body = $_POST;
+        }
+        $csrf = (string) ($body['_csrf'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
+        if ($csrf === '' || !hash_equals(Csrf::token(), $csrf)) {
+            json_response(['ok' => false, 'error' => 'Security token expired. Refresh and try again.'], 419);
+        }
+        $farm = self::currentFarm();
+        if (!$farm) {
+            json_response(['ok' => false, 'error' => 'No active farm.'], 400);
+        }
+        $id = (int) ($body['id'] ?? 0);
+        $row = $id > 0 ? db()->find('fields', $id) : null;
+        if (!$row || (int) $row['farm_id'] !== (int) $farm['id']) {
+            json_response(['ok' => false, 'error' => 'Field not found.'], 404);
+        }
+        $plantingCount = (int) db()->value('SELECT COUNT(*) FROM plantings WHERE field_id = ?', [$id]);
+        if ($plantingCount > 0) {
+            json_response([
+                'ok' => false,
+                'error' => 'This field has planting history and cannot be deleted. Mark it vacant instead.',
+                'planting_count' => $plantingCount,
+            ], 409);
+        }
+        $related = (int) db()->value('SELECT COUNT(*) FROM soil_records WHERE field_id = ?', [$id]);
+        $related += (int) db()->value('SELECT COUNT(*) FROM crop_rotations WHERE field_id = ?', [$id]);
+        if ($related > 0) {
+            json_response([
+                'ok' => false,
+                'error' => 'This field has related records and cannot be deleted. Mark it vacant instead.',
+            ], 409);
+        }
+        try {
+            db()->delete('fields', $id);
+        } catch (Throwable $e) {
+            json_response(['ok' => false, 'error' => 'Could not delete field because related records still depend on it.'], 409);
+        }
+        Audit::log('delete', 'fields', $id, 'Field deleted from Fields & Plots map');
+        json_response(['ok' => true]);
+    }
+
+    public static function cropRotationMap(): void
+    {
+        Auth::authorize('crop_rotations', 'view');
+        $farm = self::currentFarm();
+        $mapData = CropRotationMapService::build($farm);
+        view('layouts/app', [
+            'title' => 'Crop Rotation',
+            'content' => render('crop_rotation_map', compact('farm', 'mapData')),
+        ]);
+    }
+
+    public static function cropRotationFieldReport($id): void
+    {
+        Auth::authorize('crop_rotations', 'view');
+        $report = CropRotationMapService::fieldReport((int) $id);
+        if (!$report) {
+            flash('error', 'Field not found.');
+            redirect('crop-rotation');
+        }
+        $bytes = CropRotationReports::fieldPdf($report);
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . CropRotationReports::fieldFilename($report['field']) . '"');
+        echo $bytes;
+        exit;
+    }
+
+    public static function cropRotationFarmReport(): void
+    {
+        Auth::authorize('crop_rotations', 'view');
+        $farm = self::currentFarm();
+        $report = CropRotationMapService::farmReport($farm);
+        if (!$report) {
+            flash('error', 'Register a farm first.');
+            redirect('crop-rotation');
+        }
+        $bytes = CropRotationReports::farmPdf($report);
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . CropRotationReports::farmFilename($report['farm']) . '"');
+        echo $bytes;
+        exit;
+    }
+
+    public static function saveFieldsPlanner(): void
+    {
+        Auth::authorize('fields', 'edit');
+        Csrf::verify();
+        $farm = self::currentFarm();
+        if (!$farm) {
+            flash('error', 'Register a farm before drawing fields.');
+            redirect('module/farms/create');
+        }
+        $farmId = (int) $farm['id'];
+        $boundary = trim((string) input('boundary_geojson', ''));
+        $fieldsJson = (string) input('fields_geojson', '[]');
+        $decodedFields = json_decode($fieldsJson, true);
+        if (!is_array($decodedFields)) {
+            flash('error', 'Could not read field shapes.');
+            redirect('fields-planner');
+        }
+        if ($boundary !== '') {
+            $b = json_decode($boundary, true);
+            if (!is_array($b)) {
+                flash('error', 'Farm boundary is invalid.');
+                redirect('fields-planner');
+            }
+            db()->update('farms', ['boundary_geojson' => json_encode($b)], $farmId);
+        }
+        $keptIds = [];
+        foreach ($decodedFields as $i => $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $name = trim((string) ($item['name'] ?? ('Field #' . ($i + 1))));
+            if ($name === '') {
+                $name = 'Field #' . ($i + 1);
+            }
+            $geo = $item['geometry'] ?? null;
+            if (!is_array($geo)) {
+                continue;
+            }
+            $size = isset($item['size_hectares']) && is_numeric($item['size_hectares'])
+                ? round((float) $item['size_hectares'], 2)
+                : 0;
+            $status = in_array(($item['status'] ?? 'active'), ['active', 'fallow', 'reserved'], true)
+                ? $item['status']
+                : 'active';
+            $lat = isset($item['latitude']) && is_numeric($item['latitude']) ? round((float) $item['latitude'], 7) : null;
+            $lng = isset($item['longitude']) && is_numeric($item['longitude']) ? round((float) $item['longitude'], 7) : null;
+            $description = mb_substr(trim((string) ($item['description'] ?? '')), 0, 2000);
+            $notes = "[[GEOJSON]]" . json_encode($geo);
+            $id = (int) ($item['id'] ?? 0);
+            $payload = [
+                'farm_id' => $farmId,
+                'name' => mb_substr($name, 0, 120),
+                'size_hectares' => $size,
+                'status' => $status,
+                'latitude' => $lat,
+                'longitude' => $lng,
+                'boundary_notes' => $notes,
+                'description' => $description !== '' ? $description : null,
+            ];
+            if ($description !== '') {
+                $payload['land_use'] = mb_substr($description, 0, 120);
+            }
+            if ($id > 0) {
+                $existing = db()->find('fields', $id);
+                if ($existing && (int) $existing['farm_id'] === $farmId) {
+                    db()->update('fields', $payload, $id);
+                    $keptIds[] = $id;
+                    continue;
+                }
+            }
+            if (!Auth::can('fields', 'create')) {
+                continue;
+            }
+            $keptIds[] = db()->insert('fields', $payload);
+        }
+        // Optional deletes when client sends delete_ids — never wipe planting history
+        $deleteIds = json_decode((string) input('delete_ids', '[]'), true);
+        if (is_array($deleteIds) && Auth::can('fields', 'delete')) {
+            foreach ($deleteIds as $delId) {
+                $delId = (int) $delId;
+                if ($delId <= 0) {
+                    continue;
+                }
+                $row = db()->find('fields', $delId);
+                if (!$row || (int) $row['farm_id'] !== $farmId) {
+                    continue;
+                }
+                $hasHistory = (int) db()->value('SELECT COUNT(*) FROM plantings WHERE field_id = ?', [$delId]) > 0
+                    || (int) db()->value('SELECT COUNT(*) FROM soil_records WHERE field_id = ?', [$delId]) > 0;
+                if ($hasHistory) {
+                    db()->update('fields', ['status' => 'fallow'], $delId);
+                    continue;
+                }
+                try {
+                    db()->delete('fields', $delId);
+                } catch (Throwable $e) {
+                    db()->update('fields', ['status' => 'fallow'], $delId);
+                }
+            }
+        }
+        Audit::log('update', 'fields', $farmId, 'Saved field divisions (' . count($keptIds) . ')');
+        flash('success', 'Farm boundary and fields saved.');
+        redirect('fields-planner');
     }
 
     public static function geocode(): void
@@ -907,10 +1671,27 @@ class AppPagesController
             if ($farm && (Auth::isAdmin() || Auth::canAccessFarm((int) $farm['id']))) {
                 return $farm;
             }
-            return null;
         }
         if (Auth::isAdmin()) {
-            return db()->first('SELECT * FROM farms ORDER BY id');
+            $farm = db()->first('SELECT * FROM farms ORDER BY id ASC');
+            if ($farm) {
+                Auth::setActiveFarm((int) $farm['id']);
+                return $farm;
+            }
+            return null;
+        }
+        if (Auth::id() && table_exists('user_farms')) {
+            $farm = db()->first(
+                'SELECT f.* FROM farms f
+                 INNER JOIN user_farms uf ON uf.farm_id = f.id
+                 WHERE uf.user_id = ?
+                 ORDER BY uf.is_primary DESC, f.id ASC',
+                [Auth::id()]
+            );
+            if ($farm) {
+                Auth::setActiveFarm((int) $farm['id']);
+                return $farm;
+            }
         }
         return null;
     }

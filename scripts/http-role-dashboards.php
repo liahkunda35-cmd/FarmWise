@@ -4,7 +4,17 @@ declare(strict_types=1);
 /**
  * HTTP check of role dashboards and denied URLs. Does not print passwords or page bodies.
  */
+require dirname(__DIR__) . '/backend/bootstrap.php';
+
 $base = 'http://127.0.0.1:8081';
+$farmCodeFor = static function (string $email): string {
+    $user = db()->first('SELECT role, farm_id FROM users WHERE email = ?', [$email]);
+    if (!$user || ($user['role'] ?? '') === 'admin' || empty($user['farm_id'])) {
+        return '';
+    }
+    $farm = db()->find('farms', (int) $user['farm_id']);
+    return (string) ($farm['join_code'] ?? '');
+};
 $users = [
     ['admin', 'admin@ifms.local', 'Admin#2026', 'Platform', 'Accounts awaiting approval', ''],
     ['owner', 'owner@ifms.local', 'Owner#2026', 'Healthy Crops', 'Income this month', '/integrations'],
@@ -102,6 +112,7 @@ foreach ($users as [$role, $email, $password, $headline, $card, $deny]) {
             '_csrf' => $token,
             'email' => $email,
             'password' => $password,
+            'farm_code' => $farmCodeFor($email),
         ]);
         if ($waking($sent) && $try < 4) {
             sleep(4);

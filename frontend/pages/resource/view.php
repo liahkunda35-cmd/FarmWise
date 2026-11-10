@@ -57,6 +57,31 @@ if (in_array($module, ['invoices', 'sales_orders', 'purchase_orders', 'quotation
 }
 ?>
 <div class="record-page" data-record-page data-module="<?= e($module) ?>" data-record-id="<?= e($row['id']) ?>">
+    <?php if ($module === 'farms'): ?>
+        <section class="farm-profile" aria-label="Farm summary">
+            <article>
+                <span>Farm</span>
+                <strong><?= e($row['name'] ?? '') ?></strong>
+            </article>
+            <article>
+                <span>Location</span>
+                <strong><?= e(trim((string) ($row['location'] ?? '')) !== '' ? $row['location'] : 'Not set') ?></strong>
+            </article>
+            <?php if (!empty($row['latitude']) && !empty($row['longitude'])): ?>
+                <article>
+                    <span>Coordinates</span>
+                    <strong><?= e($row['latitude']) ?>, <?= e($row['longitude']) ?></strong>
+                </article>
+            <?php endif; ?>
+            <?php if (farm_code_feature_enabled() && !empty($row['join_code']) && (fe_role() === 'owner' || fe_is_admin())): ?>
+                <article>
+                    <span>Farm Code</span>
+                    <strong data-copy-text="<?= e($row['join_code']) ?>"><?= e($row['join_code']) ?></strong>
+                    <button type="button" class="btn btn-ghost btn-sm" data-copy>Copy</button>
+                </article>
+            <?php endif; ?>
+        </section>
+    <?php endif; ?>
     <section class="panel">
         <header class="panel-tools">
             <div>
@@ -70,10 +95,21 @@ if (in_array($module, ['invoices', 'sales_orders', 'purchase_orders', 'quotation
                 <?php if (!empty($row['status'])): ?><?= status_badge($row['status']) ?><?php endif; ?>
             </div>
             <div class="tool-row">
-                <?php if (!empty($document)): ?>
+                <?php if ($module === 'employees'): ?>
+                    <a class="btn btn-ghost btn-sm" href="<?= e(url('module/employees/report/'.$row['id'])) ?>">Generate Report</a>
+                    <?php if (fe_can('employees', 'edit') && !empty($row['user_id'])): ?>
+                        <form method="post" action="<?= e(url('module/employees/reset-password/'.$row['id'])) ?>" data-confirm="Issue a new temporary password? The employee must change it on next sign-in.">
+                            <?= fe_csrf_field() ?>
+                            <button class="btn btn-ghost btn-sm" type="submit">New temporary password</button>
+                        </form>
+                    <?php endif; ?>
+                <?php endif; ?>
+                <?php if ($module === 'payroll' || !empty($document)): ?>
                     <a class="btn btn-ghost btn-sm" href="<?= e(url('module/'.$module.'/print/'.$row['id'])) ?>">Print</a>
                     <a class="btn btn-ghost btn-sm" href="<?= e(url('module/'.$module.'/pdf/'.$row['id'])) ?>">PDF</a>
-                    <button type="button" class="btn btn-ghost btn-sm" data-doc-preview>Preview</button>
+                    <?php if (!empty($document)): ?>
+                        <button type="button" class="btn btn-ghost btn-sm" data-doc-preview>Preview</button>
+                    <?php endif; ?>
                 <?php endif; ?>
                 <?php if (fe_can($module, 'edit')): ?>
                     <a class="btn btn-gold btn-sm" href="<?= e(url('module/'.$module.'/edit/'.$row['id'])) ?>">Edit</a>
@@ -103,6 +139,69 @@ if (in_array($module, ['invoices', 'sales_orders', 'purchase_orders', 'quotation
             <div class="next-steps-chips" data-next-chips></div>
         </div>
 
+        <?php if ($module === 'payroll'):
+            $payEmployee = !empty($row['employee_id']) ? db()->find('employees', (int) $row['employee_id']) : null;
+            $payFarm = !empty($row['farm_id']) ? db()->find('farms', (int) $row['farm_id']) : null;
+            $payGross = is_numeric($row['gross_pay'] ?? null) ? (float) $row['gross_pay'] : null;
+            $payDed = is_numeric($row['deductions'] ?? null) ? (float) $row['deductions'] : 0.0;
+            $payNet = is_numeric($row['net_pay'] ?? null) ? (float) $row['net_pay'] : ($payGross !== null ? $payGross - $payDed : null);
+        ?>
+            <article class="payslip-card" aria-label="Pay slip">
+                <header class="payslip-card-head">
+                    <div>
+                        <p class="eyebrow">Pay slip</p>
+                        <h4>PS-<?= e($row['id']) ?></h4>
+                        <p class="muted"><?= e($payFarm['name'] ?? 'Farm') ?></p>
+                    </div>
+                    <div class="payslip-card-status">
+                        <?= status_badge($row['status'] ?? 'draft') ?>
+                        <strong class="payslip-card-net"><?= $payNet !== null ? money($payNet) : '—' ?></strong>
+                        <span class="muted">Net pay</span>
+                    </div>
+                </header>
+                <dl class="payslip-card-grid">
+                    <div>
+                        <dt>Employee</dt>
+                        <dd>
+                            <strong><?= e($payEmployee['name'] ?? '—') ?></strong>
+                            <?php if (!empty($payEmployee['role_title'])): ?>
+                                <span class="muted"><?= e($payEmployee['role_title']) ?></span>
+                            <?php endif; ?>
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>Period</dt>
+                        <dd><?= e(dater($row['period_start'] ?? null)) ?> → <?= e(dater($row['period_end'] ?? null)) ?></dd>
+                    </div>
+                    <div>
+                        <dt>Days worked</dt>
+                        <dd><?= e($row['days_worked'] ?? '—') ?></dd>
+                    </div>
+                    <div>
+                        <dt>Daily rate</dt>
+                        <dd><?= isset($payEmployee['daily_rate']) ? money($payEmployee['daily_rate']) : '—' ?></dd>
+                    </div>
+                    <div>
+                        <dt>Gross pay</dt>
+                        <dd><?= $payGross !== null ? money($payGross) : '—' ?></dd>
+                    </div>
+                    <div>
+                        <dt>Deductions</dt>
+                        <dd><?= money($payDed) ?></dd>
+                    </div>
+                    <?php if (!empty($row['paid_date'])): ?>
+                        <div>
+                            <dt>Paid date</dt>
+                            <dd><?= e(dater($row['paid_date'])) ?></dd>
+                        </div>
+                    <?php endif; ?>
+                </dl>
+                <?php if (!empty($row['calculation_note'])): ?>
+                    <p class="payslip-card-note muted"><?= e($row['calculation_note']) ?></p>
+                <?php endif; ?>
+            </article>
+        <?php endif; ?>
+
         <?php if ($timeline): ?>
             <ol class="status-timeline" aria-label="Document status">
                 <?php foreach ($timeline as $step):
@@ -130,12 +229,155 @@ if (in_array($module, ['invoices', 'sales_orders', 'purchase_orders', 'quotation
             </div>
 
             <div data-tab-panel="overview">
+                <?php if ($module === 'farms'): ?>
+                    <?php
+                    $prec = (string) ($row['location_precision'] ?? 'none');
+                    $hasPin = !empty($row['latitude']) && !empty($row['longitude']);
+                    $isEmpty = static function ($v): bool {
+                        $s = trim((string) ($v ?? ''));
+                        return $s === '' || $s === '—';
+                    };
+                    $aboutFields = ['name', 'total_area', 'status', 'established_date', 'description'];
+                    $placeFields = ['country', 'province', 'district', 'town', 'landmark', 'location'];
+                    $contactFields = ['phone', 'email'];
+                    ?>
+                    <div class="farm-overview">
+                        <section class="farm-ov-card">
+                            <h4>About the farm</h4>
+                            <dl class="detail-rows">
+                                <?php foreach ($aboutFields as $name):
+                                    if (!isset($def['fields'][$name])) continue;
+                                    $field = $def['fields'][$name];
+                                    $raw = $row[$name] ?? null;
+                                    if ($name !== 'name' && $name !== 'status' && $name !== 'total_area' && $isEmpty($raw)) continue;
+                                ?>
+                                    <div>
+                                        <dt><?= e($field['label']) ?></dt>
+                                        <dd><?php
+                                            if ($name === 'status') {
+                                                echo status_badge($row[$name] ?? '');
+                                            } else {
+                                                echo fe_display($field, $raw, true);
+                                            }
+                                        ?></dd>
+                                    </div>
+                                <?php endforeach; ?>
+                            </dl>
+                        </section>
+
+                        <section class="farm-ov-card">
+                            <h4>Place</h4>
+                            <dl class="detail-rows">
+                                <?php foreach ($placeFields as $name):
+                                    if (!isset($def['fields'][$name])) continue;
+                                    $field = $def['fields'][$name];
+                                    $raw = $row[$name] ?? null;
+                                    if ($isEmpty($raw) && !in_array($name, ['country', 'location'], true)) continue;
+                                ?>
+                                    <div>
+                                        <dt><?= e($field['label']) ?></dt>
+                                        <dd><?= fe_display($field, $raw, true) ?></dd>
+                                    </div>
+                                <?php endforeach; ?>
+                            </dl>
+                        </section>
+
+                        <section class="farm-ov-card">
+                            <h4>Contact</h4>
+                            <dl class="detail-rows">
+                                <?php
+                                $hasContact = false;
+                                foreach ($contactFields as $name):
+                                    if (!isset($def['fields'][$name])) continue;
+                                    $raw = $row[$name] ?? null;
+                                    if ($isEmpty($raw)) continue;
+                                    $hasContact = true;
+                                    $field = $def['fields'][$name];
+                                ?>
+                                    <div>
+                                        <dt><?= e($field['label']) ?></dt>
+                                        <dd><?= fe_display($field, $raw, true) ?></dd>
+                                    </div>
+                                <?php endforeach; ?>
+                                <?php if (!$hasContact): ?>
+                                    <div>
+                                        <dt>Contact</dt>
+                                        <dd class="muted">No phone or email added yet.</dd>
+                                    </div>
+                                <?php endif; ?>
+                            </dl>
+                        </section>
+
+                        <section class="farm-ov-card">
+                            <h4>Map &amp; code</h4>
+                            <dl class="detail-rows">
+                                <div>
+                                    <dt>Map location</dt>
+                                    <dd class="farm-ov-map">
+                                        <?php if ($prec === 'confirmed' && $hasPin): ?>
+                                            <span class="loc-badge loc-badge-ok">Exact farm pin</span>
+                                        <?php elseif ($prec === 'approximate' && $hasPin): ?>
+                                            <span class="loc-badge loc-badge-warn">Town / village (approximate)</span>
+                                        <?php else: ?>
+                                            <span class="loc-badge loc-badge-muted">Not set on map yet</span>
+                                        <?php endif; ?>
+                                        <?php if (!empty($row['location_label'])): ?>
+                                            <span class="farm-ov-map-label"><?= e($row['location_label']) ?></span>
+                                        <?php elseif (!empty($row['location'])): ?>
+                                            <span class="farm-ov-map-label"><?= e($row['location']) ?></span>
+                                        <?php endif; ?>
+                                        <?php if ($hasPin): ?>
+                                            <span class="muted tiny"><?= e($row['latitude']) ?>, <?= e($row['longitude']) ?></span>
+                                        <?php endif; ?>
+                                        <?php if (fe_can('farms', 'edit')): ?>
+                                            <a class="btn btn-ghost btn-sm" href="<?= e(url('module/farms/edit/'.$row['id'])) ?>">Update location on map</a>
+                                        <?php endif; ?>
+                                    </dd>
+                                </div>
+                                <?php if (farm_code_feature_enabled() && !empty($row['join_code'])): ?>
+                                <div>
+                                    <dt>Farm Code</dt>
+                                    <dd class="farm-ov-code">
+                                        <strong data-copy-text="<?= e($row['join_code']) ?>"><?= e($row['join_code']) ?></strong>
+                                        <button type="button" class="btn btn-ghost btn-sm" data-copy>Copy</button>
+                                    </dd>
+                                </div>
+                                <?php endif; ?>
+                            </dl>
+                        </section>
+                    </div>
+                    <section class="farm-ov-map-panel" aria-label="Farm map">
+                        <div class="farm-ov-map-head">
+                            <h4>Farm map</h4>
+                            <?php if (fe_can('farms', 'edit')): ?>
+                                <a class="btn btn-ghost btn-sm" href="<?= e(url('module/farms/edit/'.$row['id'])) ?>">
+                                    <?= !empty($row['boundary_geojson']) ? 'Edit area on map' : 'Select farm area' ?>
+                                </a>
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($hasPin || !empty($row['boundary_geojson'])): ?>
+                            <div
+                                id="farm-overview-map"
+                                class="map-canvas map-canvas-farm-ov"
+                                data-farm-map="mini"
+                                data-lat="<?= e($row['latitude'] ?? '') ?>"
+                                data-lng="<?= e($row['longitude'] ?? '') ?>"
+                                data-label="<?= e($row['name'] ?? 'Farm') ?>"
+                                <?php if (!empty($row['boundary_geojson'])): ?>
+                                    data-geojson="<?= e($row['boundary_geojson']) ?>"
+                                <?php endif; ?>
+                            ></div>
+                            <?php if (empty($row['boundary_geojson'])): ?>
+                                <p class="muted farm-ov-map-empty">Only a pin is saved so far. Click <strong>Select farm area</strong>, drag a box around the land, then Save — the shaded area will show here.</p>
+                            <?php endif; ?>
+                        <?php else: ?>
+                            <p class="muted farm-ov-map-empty">No map pin yet. Use Select farm area to place this farm on the map.</p>
+                        <?php endif; ?>
+                    </section>
+                <?php else: ?>
                 <dl class="detail-grid">
                     <?php foreach ($def['fields'] as $name => $field): ?>
                         <?php
-                        if ($module === 'farms' && in_array($name, ['latitude', 'longitude', 'location_precision', 'location_label'], true)) {
-                            continue;
-                        }
                         if (in_array($name, ['latitude', 'longitude'], true) && empty($row[$name])) {
                             continue;
                         }
@@ -153,43 +395,8 @@ if (in_array($module, ['invoices', 'sales_orders', 'purchase_orders', 'quotation
                             ?></dd>
                         </div>
                     <?php endforeach; ?>
-                    <?php if ($module === 'farms'): ?>
-                        <?php
-                        $prec = (string) ($row['location_precision'] ?? 'none');
-                        $hasPin = !empty($row['latitude']) && !empty($row['longitude']);
-                        ?>
-                        <div>
-                            <dt>Map location</dt>
-                            <dd>
-                                <?php if ($prec === 'confirmed' && $hasPin): ?>
-                                    <span class="loc-badge loc-badge-ok">Exact farm pin</span>
-                                <?php elseif ($prec === 'approximate' && $hasPin): ?>
-                                    <span class="loc-badge loc-badge-warn">Town / village (approximate)</span>
-                                <?php else: ?>
-                                    <span class="loc-badge loc-badge-muted">Not set on map yet</span>
-                                <?php endif; ?>
-                                <?php if (!empty($row['location_label'])): ?>
-                                    <p class="muted" style="margin:.35rem 0 0"><?= e($row['location_label']) ?></p>
-                                <?php elseif (!empty($row['location'])): ?>
-                                    <p class="muted" style="margin:.35rem 0 0"><?= e($row['location']) ?></p>
-                                <?php endif; ?>
-                                <?php if (fe_can('farms', 'edit')): ?>
-                                    <p style="margin:.45rem 0 0"><a class="btn btn-ghost btn-sm" href="<?= e(url('module/farms/edit/'.$row['id'])) ?>">Update location on map</a></p>
-                                <?php endif; ?>
-                            </dd>
-                        </div>
-                        <?php if (!empty($row['join_code'])): ?>
-                        <div>
-                            <dt>Farm join code</dt>
-                            <dd>
-                                <strong data-copy-text="<?= e($row['join_code']) ?>"><?= e($row['join_code']) ?></strong>
-                                <button type="button" class="btn btn-ghost btn-sm" data-copy>Copy</button>
-                                <p class="muted">Share with managers and workers so they can join this farm.</p>
-                            </dd>
-                        </div>
-                        <?php endif; ?>
-                    <?php endif; ?>
                 </dl>
+                <?php endif; ?>
 
                 <?php if ($module === 'plantings'): ?>
                     <div class="hub-cards">
@@ -256,7 +463,12 @@ if (in_array($module, ['invoices', 'sales_orders', 'purchase_orders', 'quotation
                             <?php foreach ($group['rows'] as $rel): ?>
                                 <li>
                                     <a class="feed-link" href="<?= e(url('module/'.$group['module'].'/view/'.$rel['id'])) ?>">
-                                        <strong><?= e($rel[$group['label']] ?? option_label($rel) ?: ('#'.$rel['id'])) ?></strong>
+                                        <strong><?= e(
+                                            ($rel[$group['label']] ?? null)
+                                                ?: ($rel['crop_name'] ?? null)
+                                                ?: option_label($rel)
+                                                ?: ('#'.$rel['id'])
+                                        ) ?></strong>
                                         <span><?= !empty($rel['status']) ? status_badge($rel['status']) : '' ?> <?= e($rel['created_at'] ?? '') ?></span>
                                     </a>
                                 </li>
@@ -391,5 +603,5 @@ if (in_array($module, ['invoices', 'sales_orders', 'purchase_orders', 'quotation
 <script>
 window.IFMS_RECORD = <?= json_encode(['module' => $module, 'record' => $recordPayload, 'canCreate' => array_values(array_filter(array_map(function ($m) {
     return fe_can($m, 'create') ? $m : null;
-}, ['fields','warehouses','employees','budgets','soil_records','crop_rotations','plantings','irrigation_systems','crop_growth','fertilizer_applications','spray_schedules','pest_scouting','pest_treatments','tasks','harvests','storage_lots','sales_orders','invoices','payments','dispatches','quotations','purchase_orders','stock_movements','customers','suppliers','livestock_health','livestock_feed','livestock_weights','breeding_records','livestock_production','attendance','payroll','equipment_logs','water_logs','contracts','yield_forecasts']))), 'canEdit' => fe_can($module, 'edit')]) ?>;
+}, ['fields','warehouses','employees','budgets','soil_records','crop_rotations','plantings','crop_varieties','irrigation_systems','crop_growth','fertilizer_applications','spray_schedules','pest_scouting','pest_treatments','tasks','harvests','storage_lots','sales_orders','invoices','payments','dispatches','quotations','purchase_orders','stock_movements','customers','suppliers','livestock_health','livestock_feed','livestock_weights','breeding_records','livestock_production','attendance','payroll','equipment_logs','water_logs','contracts','yield_forecasts','land_use_plans']))), 'canEdit' => fe_can($module, 'edit')]) ?>;
 </script>

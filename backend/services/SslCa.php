@@ -31,9 +31,22 @@ class SslCa
         return null;
     }
 
-    /** Apply CA + keep peer verification enabled. */
+    /** True when local Sophos/firewall MITM requires temporary verification bypass. */
+    public static function insecureAllowed(): bool
+    {
+        $raw = strtolower(trim((string) (getenv('IFMS_SSL_INSECURE') ?: ($_ENV['IFMS_SSL_INSECURE'] ?? ''))));
+        return in_array($raw, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /** Apply CA + peer verification (or explicit local insecure override). */
     public static function applyCurl($ch): void
     {
+        if (self::insecureAllowed()) {
+            // Local-only escape hatch when SSL inspection MITM CA is not installed.
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+            return;
+        }
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
         $ca = self::caInfoPath();
@@ -47,9 +60,12 @@ class SslCa
         if (!str_contains(strtolower($curlError), 'ssl') && !str_contains(strtolower($curlError), 'certificate')) {
             return null;
         }
+        if (self::insecureAllowed()) {
+            return null;
+        }
         return 'HTTPS certificate verification failed. If a corporate firewall (e.g. Sophos) intercepts TLS, '
             . 'export its SSL inspection CA as PEM, append it to storage/certs/cacert-with-local.pem '
-            . '(start from storage/certs/cacert.pem), or set IFMS_SSL_CAINFO to that file. '
-            . 'Do not disable SSL verification. Production hosts without TLS inspection should use the Mozilla CA bundle only.';
+            . '(start from storage/certs/cacert.pem), set IFMS_SSL_CAINFO to that file, '
+            . 'or for local dev only set IFMS_SSL_INSECURE=1. Production hosts without TLS inspection should use the Mozilla CA bundle only.';
     }
 }

@@ -59,7 +59,7 @@ class ReportService
             'expenses' => 'Expenses',
             'sales' => 'Sales orders',
             'inventory' => 'Inventory',
-            'labour' => 'Labour',
+            'labour' => 'Employees & Workers',
             'irrigation' => 'Irrigation',
             'pests' => 'Pest & disease',
             'equipment' => 'Equipment',

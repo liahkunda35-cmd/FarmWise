@@ -5,7 +5,15 @@ class DashboardController
     public static function index(): void
     {
         Auth::requireAuth();
-        NotificationService::syncAlerts();
+        $dashKey = 'dash:' . (int) Auth::id() . ':' . (int) (Auth::farmId() ?? 0) . ':' . (string) Auth::role();
+        $cached = session_memo_get($dashKey);
+        if (is_array($cached) && isset($cached['title'], $cached['vars']) && is_array($cached['vars'])) {
+            view('layouts/app', [
+                'title' => $cached['title'],
+                'content' => render('dashboard', $cached['vars']),
+            ]);
+            return;
+        }
         $farm = self::farm();
         $forecast = null;
         if ($farm) {
@@ -75,6 +83,7 @@ class DashboardController
             array_merge($scope['plain']['params'], $taskParams, [$today])
         );
         $alerts = self::visibleAlerts(NotificationService::latest(8));
+        $pendingApprovals = self::pendingApprovals();
         $focus = self::focus($scope, $stats, $taskSql, $taskParams);
         $weather = $farm
             ? db()->first('SELECT * FROM weather_logs WHERE farm_id = ? ORDER BY log_date DESC, id DESC', [$farm['id']])
@@ -111,13 +120,15 @@ class DashboardController
             $wxUpdated = $weather['updated_at'] ?? $weather['created_at'] ?? null;
         }
 
+        $dashVars = compact(
+            'stats', 'livestockMix', 'todayTasks', 'alerts', 'weather', 'daily', 'currentWx', 'wxMeta',
+            'tips', 'farm', 'activity', 'health', 'irrigationUpdated', 'farmPhoto', 'healthDays', 'wxUpdated',
+            'focus', 'pendingApprovals'
+        );
+        session_memo_set($dashKey, ['title' => 'Farm Dashboard', 'vars' => $dashVars], 60);
         view('layouts/app', [
             'title' => 'Farm Dashboard',
-            'content' => render('dashboard', compact(
-                'stats', 'livestockMix', 'todayTasks', 'alerts', 'weather', 'daily', 'currentWx', 'wxMeta',
-                'tips', 'farm', 'activity', 'health', 'irrigationUpdated', 'farmPhoto', 'healthDays', 'wxUpdated',
-                'focus'
-            )),
+            'content' => render('dashboard', $dashVars),
         ]);
     }
 
@@ -362,6 +373,9 @@ class DashboardController
     private static function focus(array $scope, array $stats, string $taskSql, array $taskParams): array
     {
         $role = (string) Auth::role();
+        if (!Auth::isKnownRole($role)) {
+            abort(403, 'Your account role is not allowed to open the dashboard.');
+        }
         $ps = $scope['plain']['sql'];
         $pp = $scope['plain']['params'];
         $card = static function (string $href, string $icon, string $label, string $value): array {
@@ -411,7 +425,7 @@ class DashboardController
                 $card(url('module/attendance'), 'clipboard-check', 'Attendance', 'Record'),
             ];
             if (Auth::can('pest_scouting', 'create')) {
-                $focus['cards'][] = $card(url('module/pest_scouting/create'), 'bug', 'Pest observation', 'Add');
+                $focus['cards'][] = $card(url('module/pest_scouting'), 'bug', 'Pest observations', 'Open');
             }
             return $focus;
         }
@@ -479,6 +493,9 @@ class DashboardController
             ];
             return $focus;
         }
+        if ($role !== 'owner') {
+            abort(403, 'Your account role is not allowed to open the dashboard.');
+        }
         $month = date('Y-m-01');
         $incomeRows = (int) db()->value("SELECT COUNT(*) FROM transactions {$ps} AND type = 'income' AND txn_date >= ?", array_merge($pp, [$month]));
         $expenseRows = (int) db()->value("SELECT COUNT(*) FROM transactions {$ps} AND type = 'expense' AND txn_date >= ?", array_merge($pp, [$month]));
@@ -494,6 +511,15 @@ class DashboardController
             $card(url('module/transactions'), 'trending-up', 'Income this month', $income),
             $card(url('module/transactions'), 'trending-down', 'Expenses this month', $expense),
         ];
+        if (Auth::farmId()) {
+            $pendingStaff = (int) db()->value(
+                "SELECT COUNT(*) FROM users WHERE status = 'pending' AND role != 'admin' AND farm_id = ?",
+                [Auth::farmId()]
+            );
+            if ($pendingStaff > 0) {
+                array_unshift($focus['cards'], $card(url('users'), 'user-check', 'Staff awaiting approval', (string) $pendingStaff));
+            }
+        }
         return $focus;
     }
 
@@ -513,6 +539,35 @@ class DashboardController
             if (count($out) >= 5) {
                 break;
             }
+        }
+        return $out;
+    }
+
+    /** @return list<array<string,mixed>> */
+    private static function pendingApprovals(): array
+    {
+        if (!Auth::can('users', 'edit') || (!Auth::isAdmin() && Auth::role() !== 'owner')) {
+            return [];
+        }
+        $sql = "SELECT id, name, username, email, role, requested_role, status, farm_id, created_at, must_change_password
+                FROM users WHERE status = 'pending'";
+        $params = [];
+        if (!Auth::isAdmin()) {
+            if (!Auth::farmId()) {
+                return [];
+            }
+            $sql .= ' AND role != ? AND farm_id = ?';
+            $params[] = 'admin';
+            $params[] = Auth::farmId();
+        }
+        $sql .= ' ORDER BY created_at ASC, id ASC LIMIT 12';
+        $rows = db()->select($sql, $params);
+        $out = [];
+        foreach ($rows as $row) {
+            if (!RegistrationService::canReview($row)) {
+                continue;
+            }
+            $out[] = $row;
         }
         return $out;
     }

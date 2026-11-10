@@ -35,21 +35,6 @@ $assistantSubtitle = $assistantMode === 'auth'
     ? $assistantUi['subtitle_auth']
     : $assistantUi['subtitle_public'];
 
-$assistantSuggestions = $assistantMode === 'auth'
-    ? [
-        'Help me understand my farm dashboard.',
-        'How can I improve my crop management?',
-        'Help me review my farm reports.',
-        'Help me plan my farm activities.',
-        'What livestock do I have recorded?',
-        'Should I irrigate based on the weather forecast?',
-    ]
-    : [
-        'How do I sign up?',
-        'How do I reset my password?',
-        'What is FarmWise?',
-        'How do I sign in?',
-    ];
 ?>
 <div
     id="fw-ai-root"
@@ -96,11 +81,7 @@ $assistantSuggestions = $assistantMode === 'auth'
             </div>
         </header>
         <div class="fw-ai-msgs" id="fw-ai-msgs" aria-live="polite"></div>
-        <div class="fw-ai-suggestions" id="fw-ai-suggestions">
-            <?php foreach ($assistantSuggestions as $q): ?>
-                <button type="button" class="fw-ai-chip" data-q="<?= e($q) ?>"><?= e($q) ?></button>
-            <?php endforeach; ?>
-        </div>
+        <div class="fw-ai-suggestions" id="fw-ai-suggestions" hidden></div>
         <form class="fw-ai-form" id="fw-ai-form">
             <label class="sr-only" for="fw-ai-input">Message</label>
             <textarea id="fw-ai-input" rows="1" maxlength="2000" placeholder="<?= e($assistantMode === 'auth' ? $assistantUi['placeholder_auth'] : $assistantUi['placeholder_public']) ?>" required></textarea>

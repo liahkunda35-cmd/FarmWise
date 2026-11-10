@@ -1,60 +1,81 @@
 <?php fe_component('partials/frontend'); ?>
-<section class="panel list-panel" data-list-panel>
-    <header class="panel-tools">
-        <div>
+<?php
+$recordLabel = $total === 1 ? ($def['singular'] ?? 'record') : ($def['title'] ?? 'records');
+$description = trim((string) ($def['description'] ?? ''));
+if ($description === '') {
+    $description = 'Manage your ' . strtolower((string) ($def['title'] ?? 'records')) . '.';
+}
+$showExport = fe_can($module, 'view') && $total > 0;
+?>
+<section class="panel list-panel list-panel-clean" data-list-panel>
+    <header class="list-hero">
+        <div class="list-hero-copy">
             <h3><?= e($def['title']) ?></h3>
-            <p class="muted"><?= e($def['description'] ?? ($total . ' records')) ?></p>
+            <p class="muted"><?= e($description) ?></p>
+            <p class="list-count"><?= (int) $total ?> <?= e($recordLabel) ?></p>
         </div>
-        <div class="tool-row">
-            <form class="search-form" method="get">
-                <label class="sr-only" for="list-q">Search</label>
-                <input id="list-q" type="search" name="q" value="<?= e(input('q')) ?>" placeholder="Search…">
-                <?php if (isset($def['fields']['status'])): ?>
-                    <label class="sr-only" for="list-status">Status</label>
-                    <select id="list-status" name="status">
-                        <option value="">All statuses</option>
-                        <?php foreach ($def['fields']['status']['options'] as $k => $l): ?>
-                            <option value="<?= e($k) ?>" <?= input('status')===$k?'selected':'' ?>><?= e($l) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                <?php endif; ?>
-                <?php if (!empty($dateCol)): ?>
-                    <input type="date" name="date_from" value="<?= e(input('date_from')) ?>" aria-label="Start date">
-                    <input type="date" name="date_to" value="<?= e(input('date_to')) ?>" aria-label="End date">
-                <?php endif; ?>
-                <input type="hidden" name="sort" value="<?= e($sort ?? 'id') ?>">
-                <input type="hidden" name="dir" value="<?= e($dir ?? 'desc') ?>">
-                <button class="btn btn-ghost btn-sm" type="submit">Filter</button>
-                <a class="btn btn-ghost btn-sm" href="<?= e(url('module/'.$module)) ?>">Reset</a>
-            </form>
-            <button type="button" class="btn btn-ghost btn-sm" data-col-toggle aria-haspopup="true">Columns</button>
-            <a class="btn btn-ghost btn-sm" href="?<?= e(request_query(['export' => 'csv', 'page' => null])) ?>">Export CSV</a>
+        <div class="list-hero-actions<?= $module === 'employees' ? ' employees-hero-actions' : '' ?>">
             <?php if (fe_can($module, 'create')): ?>
-                <a class="btn btn-gold btn-sm" href="<?= e(url('module/'.$module.'/create')) ?>">Add <?= e($def['singular']) ?></a>
+                <a class="btn btn-gold btn-sm" href="<?= e(url('module/'.$module.'/create')) ?>"><?= $module === 'employees' ? 'Add employee' : ('+ Add ' . ($def['singular'] ?? 'record')) ?></a>
+            <?php endif; ?>
+            <?php if ($module === 'fields' && fe_can('fields', 'view')): ?>
+                <a class="btn btn-ghost btn-sm" href="<?= e(url('fields-planner')) ?>">Divide on map</a>
+            <?php endif; ?>
+            <?php if ($module === 'employees' && fe_can('reports', 'view')): ?>
+                <?php if ($rows): ?>
+                    <div class="employees-report-pick">
+                        <label class="sr-only" for="employee-report-pick">Employee for individual report</label>
+                        <select id="employee-report-pick" data-employee-report-select>
+                            <?php foreach ($rows as $emp): ?>
+                                <option value="<?= e(url('module/employees/report/' . (int) $emp['id'])) ?>">
+                                    <?= e((string) ($emp['name'] ?? 'Employee')) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <button type="button" class="btn btn-ghost btn-sm" data-employee-report-go>Individual report</button>
+                    </div>
+                <?php endif; ?>
+                <a class="btn btn-ghost btn-sm" href="<?= e(url('reports?type=labour')) ?>">Full employees report</a>
+            <?php endif; ?>
+            <?php if ($showExport && $module !== 'employees'): ?>
+                <a class="btn btn-ghost btn-sm" href="?<?= e(request_query(['export' => 'csv', 'page' => null])) ?>">Download report</a>
             <?php endif; ?>
         </div>
+        <?php if ($module === 'employees' && fe_can('reports', 'view') && $rows): ?>
+        <script>
+        (function () {
+            var sel = document.querySelector('[data-employee-report-select]');
+            var go = document.querySelector('[data-employee-report-go]');
+            if (!sel || !go) return;
+            go.addEventListener('click', function () {
+                if (sel.value) window.location.href = sel.value;
+            });
+        })();
+        </script>
+        <?php endif; ?>
     </header>
 
-    <?php
-    $chips = [];
-    if (input('q')) $chips[] = ['q', 'Search: ' . input('q')];
-    if (input('status')) $chips[] = ['status', 'Status: ' . input('status')];
-    if (input('date_from')) $chips[] = ['date_from', 'From: ' . input('date_from')];
-    if (input('date_to')) $chips[] = ['date_to', 'To: ' . input('date_to')];
+    <?php if ($module === 'attendance'):
+        $perf = $attendancePerf ?? ['total' => 0, 'present' => 0, 'absent' => 0, 'leave' => 0, 'half_day' => 0, 'rate' => 0];
+        $rate = (float) ($perf['rate'] ?? 0);
+        $deg = max(0, min(100, $rate)) * 3.6;
     ?>
-    <?php if ($chips): ?>
-        <div class="filter-chips" aria-label="Active filters">
-            <?php foreach ($chips as [$key, $label]): ?>
-                <a class="filter-chip" href="?<?= e(request_query([$key => null, 'page' => 1])) ?>"><?= e($label) ?> ×</a>
-            <?php endforeach; ?>
+    <section class="attendance-perf" aria-label="Attendance performance">
+        <div class="attendance-ring" style="--att-deg: <?= e((string) $deg) ?>deg" role="img" aria-label="Attendance rate <?= e((string) $rate) ?> percent">
+            <div class="attendance-ring-inner">
+                <strong><?= e(rtrim(rtrim(number_format($rate, 1), '0'), '.')) ?>%</strong>
+                <span>Attendance</span>
+            </div>
         </div>
+        <div class="attendance-perf-stats">
+            <article><b><?= (int) ($perf['present'] ?? 0) ?></b><span>Present</span></article>
+            <article><b><?= (int) ($perf['half_day'] ?? 0) ?></b><span>Half day</span></article>
+            <article><b><?= (int) ($perf['leave'] ?? 0) ?></b><span>Leave</span></article>
+            <article><b><?= (int) ($perf['absent'] ?? 0) ?></b><span>Absent</span></article>
+            <article><b><?= (int) ($perf['total'] ?? 0) ?></b><span>Records</span></article>
+        </div>
+    </section>
     <?php endif; ?>
-
-    <div class="col-toggle-menu" data-col-menu hidden>
-        <?php foreach ($columns as $name => $field): ?>
-            <label><input type="checkbox" data-col-key="<?= e($name) ?>" checked> <?= e($field['label']) ?></label>
-        <?php endforeach; ?>
-    </div>
 
     <div class="table-wrap sticky-head">
         <table class="data-table" data-module="<?= e($module) ?>">
@@ -69,7 +90,7 @@
                         </a>
                     </th>
                 <?php endforeach; ?>
-                <th data-col="_actions"></th>
+                <th data-col="_actions">Actions</th>
             </tr>
             </thead>
             <tbody>
@@ -102,6 +123,9 @@
                         <?php if (fe_can($module, 'edit')): ?>
                             <a href="<?= e(url('module/'.$module.'/edit/'.$row['id'])) ?>">Edit</a>
                         <?php endif; ?>
+                        <?php if ($module === 'employees' && fe_can('reports', 'view')): ?>
+                            <a href="<?= e(url('module/employees/report/'.$row['id'])) ?>">Report</a>
+                        <?php endif; ?>
                         <?php if (fe_can($module, 'delete')): ?>
                             <form method="post" action="<?= e(url('module/'.$module.'/delete/'.$row['id'])) ?>" data-confirm="Delete this record?">
                                 <?= fe_csrf_field() ?>
@@ -113,12 +137,15 @@
             <?php endforeach; ?>
             <?php if (!$rows): ?>
                 <tr class="empty-row">
-                    <td colspan="<?= count($columns)+1 ?>">
+                    <td colspan="<?= count($columns) + 1 ?>">
                         <div class="empty-state">
-                            <h4>No <?= e(strtolower($def['title'])) ?> yet</h4>
-                            <p class="muted">Nothing matches this view.</p>
+                            <?php if ($module === 'farms'): ?>
+                                <h4>No farm registered yet.</h4>
+                            <?php else: ?>
+                                <h4>No <?= e(strtolower($def['title'])) ?> yet</h4>
+                            <?php endif; ?>
                             <?php if (fe_can($module, 'create')): ?>
-                                <a class="btn btn-gold btn-sm" href="<?= e(url('module/'.$module.'/create')) ?>">Add your first <?= e(strtolower($def['singular'])) ?></a>
+                                <a class="btn btn-gold btn-sm" href="<?= e(url('module/'.$module.'/create')) ?>">+ Add <?= e($def['singular']) ?></a>
                             <?php endif; ?>
                         </div>
                     </td>
